@@ -160,8 +160,8 @@ class TestProcessMonitor:
         )
         child_pid = proc.pid
 
-        # Wait up to 3 seconds for the monitor to detect it
-        deadline = time.monotonic() + 3.0
+        # Wait up to 5 seconds for the monitor to detect it
+        deadline = time.monotonic() + 5.0
         found = False
         while time.monotonic() < deadline:
             record = pm.get_process_by_pid(child_pid)

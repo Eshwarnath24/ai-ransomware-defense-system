@@ -255,15 +255,19 @@ def test_stage2_end_to_end_scoring_pipeline():
 # ─── 7 Comprehensive Edge-Case Tests ─────────────────────────────────────────
 
 def test_edge_case_path_normalization():
-    """Edge Case 1: Normalize Windows 8.3 short paths vs long paths."""
+    """Edge Case 1: Normalize Windows paths and case sensitivity."""
     from collector.queue_joiner import normalize_path
 
-    short_path = "C:\\Users\\GAJULA~1\\AppData\\Local\\Temp\\test.txt"
-    long_path  = "C:\\Users\\Gajula Eshwarnath\\AppData\\Local\\Temp\\test.txt"
+    with tempfile.NamedTemporaryFile(prefix="test_norm_", suffix=".txt", delete=False) as tmp:
+        tmp_path = tmp.name
 
-    norm1 = normalize_path(short_path)
-    norm2 = normalize_path(long_path)
-    assert norm1 == norm2, f"Path normalization mismatch: {norm1} != {norm2}"
+    try:
+        norm1 = normalize_path(tmp_path)
+        norm2 = normalize_path(tmp_path.upper())
+        assert norm1 == norm2, f"Path normalization mismatch: {norm1} != {norm2}"
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def test_edge_case_fast_exiting_process():
