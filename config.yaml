@@ -72,3 +72,26 @@ stage_4:
     max_fanout: 50           # Fan-out degree normalization cap
     max_target_rate: 20.0    # Max new-target rate (files/sec) for S_dev
 
+# -----------------------------------------------------------
+# Stage 5: Anomaly Scoring & Benign Profiling (DAC-OCF)
+# -----------------------------------------------------------
+stage_5:
+  isolation_forest:
+    n_estimators: 200          # Number of trees
+    contamination: 0.05        # Expected outlier fraction in training data
+    max_features: 0.8          # Feature fraction per tree
+    random_state: 42           # Reproducibility seed
+  one_class_svm:
+    kernel: "rbf"              # RBF kernel for non-linear boundary
+    nu: 0.1                    # Upper bound on training errors
+    gamma: "scale"             # Kernel coefficient (1 / (n_features * X.var()))
+  fusion_weights:
+    isolation_forest: 0.6      # Weight for IF in DAC-OCF fusion
+    one_class_svm: 0.4         # Weight for SVM in DAC-OCF fusion
+  risk_thresholds:
+    safe: 0.25                 # Below = SAFE tier
+    watch: 0.50                # Below = WATCH tier
+    suspect: 0.75              # Below = SUSPECT tier
+  model_dir: "models"          # Directory for trained model artifacts
+  dataset_path: "Dataset/RansomwareData.csv"  # Training dataset path
+
