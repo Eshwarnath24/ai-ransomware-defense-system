@@ -5,6 +5,7 @@
 ![Stage 2 Status](https://img.shields.io/badge/Stage%202-PASSED%20(14%2F14)-brightgreen?style=for-the-badge&logo=pytest)
 ![Stage 3 Status](https://img.shields.io/badge/Stage%203-PASSED%20(28%2F28)-brightgreen?style=for-the-badge&logo=pytest)
 ![Stage 4 Status](https://img.shields.io/badge/Stage%204-PASSED%20(62%2F62)-brightgreen?style=for-the-badge&logo=pytest)
+![Stage 5 Status](https://img.shields.io/badge/Stage%205-PASSED%20(30%2F30)-brightgreen?style=for-the-badge&logo=pytest)
 ![Architecture](https://img.shields.io/badge/Architecture-12--Stage%20Pipeline-orange?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 
@@ -52,13 +53,13 @@ The pipeline is organized into **11 sequential execution stages** plus a **12th 
                                            │ (Feature Vector: S_entropy, S_ETD, S_dist, S_dev, S_stab, λ_norm)
                                            ▼
  ┌───────────────────────────────────────────────────────────────────────────────────┐
- │                  STAGE 5: ANOMALY SCORING & ONE-CLASS CLUSTERING                  │  <-- UPCOMING NEXT
- │             Density-Adaptive One-Class Fusion (DAC-OCF / Isolation Forest)        │
+ │                 STAGE 5: ANOMALY SCORING & BENIGN PROFILING (DAC-OCF)             │  <-- COMPLETED & VERIFIED (30/30)
+ │              Dual Isolation Forest + One-Class SVM, Calibrated Threat Fusion      │
  └─────────────────────────────────────────┬─────────────────────────────────────────┘
-                                           │
+                                           │ (Anomaly Scores: S_IF, S_OCSVM, S_anomaly, Risk Tiers)
                                            ▼
  ┌───────────────────────────────────────────────────────────────────────────────────┐
- │              STAGES 6–7: THREAT FUSION & DYNAMIC TRUST EVOLUTION ENGINE           │
+ │              STAGES 6–7: THREAT FUSION & DYNAMIC TRUST EVOLUTION ENGINE           │  <-- UPCOMING NEXT
  │           Sigmoidal Intent Drift, Momentum Penalty, Risk Tiers (SAFE -> CRITICAL) │
  └─────────────────────────────────────────┬─────────────────────────────────────────┘
                                            │
@@ -85,7 +86,7 @@ The pipeline is organized into **11 sequential execution stages** plus a **12th 
 | **Stage 2** | **Lineage Analysis** | Parent-Child Provenance Tracing & Lineage Rarity ($S_{\text{rel}}$) | ✅ **Completed & Verified** | 14/14 Pytest Suite Passed. Enriches eCAR with lineage context |
 | **Stage 3** | **DBRG Graph Engine** | NetworkX Directed Graph with TDEW Exponential Weight Decay | ✅ **Completed & Verified** | 28/28 Pytest Suite Passed. Builds live process-file interaction graph |
 | **Stage 4** | **Feature Extraction** | 4KB Buffer Sampling, Shannon Entropy, ETD, Hawkes Point Process | ✅ **Completed & Verified** | 62/62 Pytest Suite Passed. Produces per-event feature vectors |
-| **Stage 5** | **Benign Profiling** | One-Class Anomaly Model (Isolation Forest baseline) | 📅 *Upcoming* | Uses `Dataset/RansomwareData.csv` & `Code/preprocessing.ipynb` |
+| **Stage 5** | **Anomaly Scoring (DAC-OCF)** | Dual Isolation Forest + One-Class SVM Fusion, Risk Tier Classification | ✅ **Completed & Verified** | 30/30 Pytest Suite Passed. Fused AUC-ROC=0.64, Models saved to `models/` |
 | **Stage 6** | **Threat Fusion** | Sigmoidal Intent Drift Acceleration Engine | 📅 *Upcoming* | Combines entropy, graph distance, & lineage signals |
 | **Stage 7** | **Trust State Engine** | Momentum Trust Decay Engine & Risk Tiers (SAFE/VERIFY/CRITICAL) | 📅 *Upcoming* | Controls transitions between risk states |
 | **Stage 8** | **Synthetic Harness** | Sandboxed Attack Simulator | 📅 *Upcoming* | Uses `Code/mock_ransomware.ipynb` for red-team validation |
@@ -165,6 +166,48 @@ $$n = \frac{\alpha}{\beta} \quad \text{(superheated when } n \geq 1.0\text{)}$$
 
 ---
 
+## 🎯 Stage 5: Anomaly Scoring & Benign Profiling (DAC-OCF)
+
+Stage 5 transforms Stage 4 feature vectors into calibrated anomaly scores using Density-Adaptive One-Class Fusion.
+
+### Mathematical Foundation: DAC-OCF Fusion
+
+$$S_{\text{anomaly}} = w_{IF} \cdot S_{IF} + w_{SVM} \cdot S_{SVM}$$
+
+Where $w_{IF} = 0.6$ and $w_{SVM} = 0.4$.
+
+**Isolation Forest** — Tree-based anomaly isolation:
+$$\text{Score}_{IF} = 2^{-E[h(x)] / c(n)}$$
+
+**One-Class SVM** — Kernel-based boundary in RBF space:
+$$\text{Score}_{SVM} = \text{sgn}\left(\sum_i \alpha_i K(x_i, x) - \rho\right)$$
+
+### Risk Tier Classification
+
+| Tier | Score Range | Action |
+|---|---|---|
+| **SAFE** | $S < 0.25$ | Normal operation, no intervention |
+| **WATCH** | $0.25 \leq S < 0.50$ | Elevated monitoring, log alert |
+| **SUSPECT** | $0.50 \leq S < 0.75$ | Active investigation, prepare containment |
+| **CRITICAL** | $S \geq 0.75$ | Immediate containment trigger |
+
+### Sub-Module Specifications (`src/stage_5_anomaly/`)
+
+1. **`preprocessor.py`**: Dataset loading, variance-threshold feature selection (30,967 → 929 features), StandardScaler normalization.
+2. **`model_trainer.py`**: Dual-model training pipeline (Isolation Forest + One-Class SVM), evaluation with full metrics (Accuracy, Precision, Recall, F1, AUC-ROC).
+3. **`anomaly_scorer.py`**: Thread-safe real-time scoring engine with ML mode (trained models) and heuristic fallback mode.
+4. **`train_stage5.py`**: Standalone CLI training script for the full pipeline.
+
+### Training Results
+
+| Model | Accuracy | Precision | Recall | F1-Score | AUC-ROC |
+|---|---|---|---|---|---|
+| Isolation Forest | 0.603 | 0.273 | 0.026 | 0.047 | 0.654 |
+| One-Class SVM | 0.620 | 0.500 | 0.198 | 0.284 | 0.621 |
+| **Fused DAC-OCF** | **0.603** | **0.449** | **0.190** | **0.267** | **0.641** |
+
+---
+
 ## 📁 Project Directory Structure
 
 ```text
@@ -190,18 +233,31 @@ ai-ransomware-defense-system/
 │   │   ├── dbrg_manager.py       # Thread-safe NetworkX DiGraph manager
 │   │   ├── garbage_collector.py  # Daemon thread for passive edge pruning
 │   │   └── visualize_dbrg.py     # Graph visualization generator
-│   └── stage_4_features/         # 📐 Stage 4: Feature Extraction & Hawkes
-│       ├── __init__.py           # Exports FeatureExtractor, HawkesEngine, ETDEngine
-│       ├── entropy_calculator.py # 4KB buffer sampling & Shannon entropy engine
-│       ├── hawkes_engine.py      # Hawkes self-exciting point process tracker
-│       ├── etd_engine.py         # Entropy-Topology Divergence (KL-divergence)
-│       └── feature_extractor.py  # Multi-layer feature extraction orchestrator
+│   ├── stage_4_features/         # 📐 Stage 4: Feature Extraction & Hawkes
+│   │   ├── __init__.py           # Exports FeatureExtractor, HawkesEngine, ETDEngine
+│   │   ├── entropy_calculator.py # 4KB buffer sampling & Shannon entropy engine
+│   │   ├── hawkes_engine.py      # Hawkes self-exciting point process tracker
+│   │   ├── etd_engine.py         # Entropy-Topology Divergence (KL-divergence)
+│   │   └── feature_extractor.py  # Multi-layer feature extraction orchestrator
+│   └── stage_5_anomaly/          # 🎯 Stage 5: Anomaly Scoring (DAC-OCF)
+│       ├── __init__.py           # Exports AnomalyScorer, DataPreprocessor, ModelTrainer
+│       ├── preprocessor.py       # Dataset loading, feature selection, scaling
+│       ├── model_trainer.py      # Dual IF + SVM training & evaluation pipeline
+│       ├── anomaly_scorer.py     # Real-time scoring engine (ML + heuristic fallback)
+│       └── train_stage5.py       # Standalone training CLI script
+├── models/                       # 💾 Trained Stage 5 Model Artifacts
+│   ├── isolation_forest.joblib   # Trained Isolation Forest model
+│   ├── one_class_svm.joblib      # Trained One-Class SVM model
+│   ├── scaler.joblib             # Fitted StandardScaler
+│   ├── feature_selector.joblib   # Fitted VarianceThreshold selector
+│   └── training_metadata.json    # Training hyperparameters & metrics
 ├── tests/                        # 🧪 Automated & Manual Test Suite
 │   ├── __init__.py
 │   ├── test_stage1.py            # 20 automated tests for Stage 1
-│   ├── test_stage2.py            # 14 automated tests for Stage 2
+│   ├── test_stage2.py            # 14+2 automated tests for Stage 2
 │   ├── test_stage_3_dbrg.py      # 28 automated tests for Stage 3
 │   ├── test_stage_4_features.py  # 62 automated tests for Stage 4
+│   ├── test_stage_5_anomaly.py   # 30 automated tests for Stage 5
 │   ├── manual_test_stage_3.py    # 6-item interactive manual verification CLI
 │   └── demo_ransomware_scenario.py # Live ransomware scenario simulation demo
 ├── stage3_dbrg_graph.png         # 📊 Generated DBRG visualization diagram
@@ -221,12 +277,21 @@ cd ai-ransomware-defense-system
 pip install watchdog psutil pyyaml pytest networkx matplotlib numpy
 ```
 
-### 2. Run All Automated Unit Test Suites (Stage 1 + Stage 2 + Stage 3 + Stage 4)
+### 2. Run All Automated Unit Test Suites (Stage 1 + Stage 2 + Stage 3 + Stage 4 + Stage 5)
 ```bash
-python3 -m pytest tests/ -v
+python3 -m pytest tests/test_stage1.py tests/test_stage2.py tests/test_stage_3_dbrg.py tests/test_stage_4_features.py tests/test_stage_5_anomaly.py -v
 
-# Run Stage 4 tests only
-python3 -m pytest tests/test_stage_4_features.py -v
+# Run Stage 5 tests only
+python3 -m pytest tests/test_stage_5_anomaly.py -v
+```
+
+### 2b. Train Stage 5 Anomaly Detection Models
+```bash
+# Train Isolation Forest + One-Class SVM on RansomwareData.csv
+python3 -m src.stage_5_anomaly.train_stage5
+
+# With custom parameters
+python3 -m src.stage_5_anomaly.train_stage5 --n-estimators 300 --verbose
 ```
 
 ### 3. Run Stage 3 Interactive Manual Verification CLI
