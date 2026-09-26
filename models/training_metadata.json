@@ -1,0 +1,81 @@
+{
+  "timestamp": "2026-09-23T12:08:26",
+  "training_time_sec": 0.8993465900421143,
+  "hyperparameters": {
+    "isolation_forest": {
+      "n_estimators": 200,
+      "contamination": 0.05,
+      "max_features": 0.8
+    },
+    "one_class_svm": {
+      "kernel": "rbf",
+      "nu": 0.1,
+      "gamma": "scale"
+    }
+  },
+  "evaluation_metrics": {
+    "isolation_forest": {
+      "accuracy": 0.6032786885245902,
+      "precision": 0.2727272727272727,
+      "recall": 0.02586206896551724,
+      "f1": 0.047244094488188976,
+      "auc_roc": 0.6536216018974639
+    },
+    "one_class_svm": {
+      "accuracy": 0.6196721311475409,
+      "precision": 0.5,
+      "recall": 0.19827586206896552,
+      "f1": 0.2839506172839506,
+      "auc_roc": 0.6205072067141033
+    },
+    "fused_dac_ocf": {
+      "accuracy": 0.6032786885245902,
+      "precision": 0.4489795918367347,
+      "recall": 0.1896551724137931,
+      "f1": 0.26666666666666666,
+      "auc_roc": 0.6405765371282612,
+      "fusion_weights": {
+        "isolation_forest": 0.6,
+        "one_class_svm": 0.4
+      }
+    },
+    "confusion_matrix": [
+      [
+        162,
+        27
+      ],
+      [
+        94,
+        22
+      ]
+    ],
+    "classification_report": {
+      "Goodware": {
+        "precision": 0.6328125,
+        "recall": 0.8571428571428571,
+        "f1-score": 0.7280898876404495,
+        "support": 189.0
+      },
+      "Ransomware": {
+        "precision": 0.4489795918367347,
+        "recall": 0.1896551724137931,
+        "f1-score": 0.26666666666666666,
+        "support": 116.0
+      },
+      "accuracy": 0.6032786885245902,
+      "macro avg": {
+        "precision": 0.5408960459183674,
+        "recall": 0.5233990147783251,
+        "f1-score": 0.4973782771535581,
+        "support": 305.0
+      },
+      "weighted avg": {
+        "precision": 0.5628957218133155,
+        "recall": 0.6032786885245902,
+        "f1-score": 0.5525977773684534,
+        "support": 305.0
+      }
+    },
+    "training_time_sec": 0.8993465900421143
+  }
+}
