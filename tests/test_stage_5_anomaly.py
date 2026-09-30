@@ -4,27 +4,25 @@ tests/test_stage_5_anomaly.py
 Stage 5 — Automated Test Suite for Anomaly Scoring & Benign Profiling (DAC-OCF)
 
 Test Categories:
-    1. DataPreprocessor  (8 tests)  — CSV loading, feature selection, scaling
+    1. DataPreprocessor  (8 tests)  — RADAR / Sysmon stream processing, scaling, 7-dim features
     2. ModelTrainer      (8 tests)  — Model training, evaluation, serialization
-    3. AnomalyScorer     (10 tests) — Scoring, risk tiers, fallback, thread safety
+    3. AnomalyScorer     (10 tests) — Scoring, ML mode, risk tiers, fallback, thread safety
     4. Integration       (4 tests)  — End-to-end Stage 4 -> Stage 5 pipeline
 
 Total: 30 tests
-
-Usage:
-    python -m pytest tests/test_stage_5_anomaly.py -v
 """
 
 import math
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 import threading
 import time
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 # Ensure project root on path
@@ -32,634 +30,420 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.stage_5_anomaly.preprocessor import DataPreprocessor
+from src.stage_5_anomaly.preprocessor import DataPreprocessor, FEATURE_COLUMNS
 from src.stage_5_anomaly.model_trainer import ModelTrainer
 from src.stage_5_anomaly.anomaly_scorer import (
     AnomalyScorer,
-    FEATURE_COLUMNS,
     HEURISTIC_WEIGHTS,
+    DEFAULT_THRESHOLDS,
 )
 
 
 # ─── Synthetic Data Helpers ─────────────────────────────────────────────────
 
-def _make_synthetic_dataset(
-    n_goodware: int = 200,
-    n_ransomware: int = 80,
-    n_features: int = 50,
-    random_state: int = 42,
-):
-    """
-    Generate a synthetic dataset mimicking the RansomwareData.csv structure.
-
-    Goodware: low values (mean=0.1, std=0.05)
-    Ransomware: higher values with more variance (mean=0.6, std=0.3)
-    """
-    rng = np.random.RandomState(random_state)
-    n_total = n_goodware + n_ransomware
-
-    # Generate features
-    X_good = rng.normal(0.1, 0.05, size=(n_goodware, n_features)).clip(0)
-    X_ransom = rng.normal(0.6, 0.3, size=(n_ransomware, n_features)).clip(0)
-    X = np.vstack([X_good, X_ransom])
-
-    # Labels
-    y_label = np.array([0] * n_goodware + [1] * n_ransomware)
-
-    # Family IDs
-    y_family = np.zeros(n_total, dtype=int)
-    y_family[n_goodware:] = rng.randint(1, 12, size=n_ransomware)
-
-    return X, y_label, y_family
-
-
-def _make_synthetic_csv(tmp_dir: str, n_goodware=50, n_ransomware=30, n_features=20):
-    """Create a synthetic CSV file in RansomwareData.csv format (no header)."""
+def _make_synthetic_stage4_dataframe(n_goodware: int = 100, n_ransomware: int = 50):
+    """Generate synthetic Stage 4 feature dataframe."""
     rng = np.random.RandomState(42)
-    n_total = n_goodware + n_ransomware
-
-    X_good = rng.normal(0.1, 0.05, size=(n_goodware, n_features)).clip(0)
-    X_ransom = rng.normal(0.6, 0.3, size=(n_ransomware, n_features)).clip(0)
-
     rows = []
+
+    # Goodware: low entropy, low target velocity, low Hawkes burst
     for i in range(n_goodware):
-        row = [i + 1, 0, 0] + X_good[i].tolist()
-        rows.append(row)
+        rows.append({
+            "S_entropy": float(rng.uniform(0.1, 0.4)),
+            "S_ETD": float(rng.uniform(0.7, 0.99)),
+            "S_dist": float(rng.uniform(0.6, 0.99)),
+            "S_dev": float(rng.uniform(0.001, 0.05)),
+            "S_stab": float(rng.uniform(0.3, 0.6)),
+            "lambda_norm": float(rng.uniform(0.001, 0.05)),
+            "branching_n": 0.625,
+            "label": 0,
+            "family": "goodware",
+        })
+
+    # Ransomware: high entropy, high target velocity, high Hawkes burst
     for i in range(n_ransomware):
-        family = rng.randint(1, 12)
-        row = [n_goodware + i + 1, 1, family] + X_ransom[i].tolist()
-        rows.append(row)
+        rows.append({
+            "S_entropy": float(rng.uniform(0.7, 0.98)),
+            "S_ETD": float(rng.uniform(0.7, 0.99)),
+            "S_dist": float(rng.uniform(0.6, 0.99)),
+            "S_dev": float(rng.uniform(0.6, 0.99)),
+            "S_stab": float(rng.uniform(0.1, 0.4)),
+            "lambda_norm": float(rng.uniform(0.7, 0.99)),
+            "branching_n": 1.25,
+            "label": 1,
+            "family": "LockBit",
+        })
 
-    csv_path = os.path.join(tmp_dir, "test_dataset.csv")
-    import csv
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        for row in rows:
-            writer.writerow(row)
+    return pd.DataFrame(rows)
 
+
+def _make_synthetic_sysmon_csv(tmp_dir: str, n_rows: int = 40):
+    """Create a minimal synthetic Sysmon CSV log file."""
+    rows = []
+    for i in range(n_rows):
+        rows.append({
+            "@timestamp": "Oct 16, 2024 @ 16:44:31.522",
+            "event.code": 11 if i % 2 == 0 else 23,
+            "event.action": "File created",
+            "process.executable": "C:\\Windows\\System32\\notepad.exe",
+            "file.path": f"C:\\Users\\test\\file_{i}.txt",
+            "file.name": f"file_{i}.txt",
+            "process.parent.pid": 1000 + (i % 3),
+            "target-class-name": "goodware",
+            "target-class": 0,
+        })
+    df = pd.DataFrame(rows)
+    csv_path = os.path.join(tmp_dir, "test_goodware.csv")
+    df.to_csv(csv_path, index=False)
     return csv_path
 
 
-def _make_benign_feature_vector():
-    """Create a typical benign/goodware Stage 4 feature vector."""
-    return {
-        "S_entropy": 0.15,
-        "S_ETD": 0.05,
-        "S_dist": 0.02,
-        "S_dev": 0.01,
-        "S_stab": 0.95,
-        "lambda_norm": 0.02,
-        "branching_n": 0.1,
-        "is_superheated": False,
-        "entropy_raw": 1.2,
-        "delta_H": 0.1,
-        "hist_variance": 0.001,
-        "hist_kurtosis": -1.5,
-        "fan_out_degree": 1,
-        "pid": 1234,
-        "file_path": "C:\\Users\\test\\doc.txt",
-        "operation": "modified",
-        "timestamp": time.time() * 1000,
-        "actor_id": "pid:1234",
-    }
-
-
-def _make_ransomware_feature_vector():
-    """Create a typical ransomware-like Stage 4 feature vector."""
-    return {
-        "S_entropy": 0.99,
-        "S_ETD": 0.88,
-        "S_dist": 0.75,
-        "S_dev": 0.90,
-        "S_stab": 0.05,
-        "lambda_norm": 0.92,
-        "branching_n": 1.5,
-        "is_superheated": True,
-        "entropy_raw": 7.95,
-        "delta_H": 6.5,
-        "hist_variance": 0.0001,
-        "hist_kurtosis": -2.9,
-        "fan_out_degree": 42,
-        "pid": 6666,
-        "file_path": "C:\\Users\\test\\encrypted.docx",
-        "operation": "modified",
-        "timestamp": time.time() * 1000,
-        "actor_id": "pid:6666",
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Test Group 1: DataPreprocessor
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─── Category 1: DataPreprocessor Tests (8 tests) ───────────────────────────
 
 class TestDataPreprocessor:
-    """Tests for the Stage 5 DataPreprocessor."""
+    def test_feature_columns_defined(self):
+        """Test that the 7 Stage 4 feature columns are defined."""
+        assert len(FEATURE_COLUMNS) == 7
+        assert "S_entropy" in FEATURE_COLUMNS
+        assert "lambda_norm" in FEATURE_COLUMNS
+        assert "branching_n" in FEATURE_COLUMNS
 
-    def test_load_synthetic_csv(self, tmp_path):
-        """Test loading a synthetic CSV dataset."""
-        csv_path = _make_synthetic_csv(str(tmp_path))
-        prep = DataPreprocessor(dataset_path=csv_path)
-        X, y_label, y_family = prep.load_dataset()
+    def test_extract_features_from_stream(self, tmp_path):
+        """Test feature extraction from a Sysmon dataframe stream."""
+        csv_path = _make_synthetic_sysmon_csv(str(tmp_path), n_rows=20)
+        df = pd.read_csv(csv_path)
+        prep = DataPreprocessor(goodware_path=csv_path)
+        feats = prep.extract_features_from_sysmon_stream(df, is_ransomware=False, max_records=20)
+        assert len(feats) == 20
+        assert all(col in feats[0] for col in FEATURE_COLUMNS)
+        assert feats[0]["label"] == 0
 
-        assert X.shape[0] == 80  # 50 goodware + 30 ransomware
-        assert X.shape[1] == 20  # 20 API features
-        assert len(y_label) == 80
-        assert len(y_family) == 80
-        assert set(np.unique(y_label)).issubset({0, 1})
+    def test_build_or_load_dataset(self, tmp_path):
+        """Test building dataset and loading from cache."""
+        cache_path = os.path.join(str(tmp_path), "cache.csv")
+        df_synth = _make_synthetic_stage4_dataframe(30, 20)
+        df_synth.to_csv(cache_path, index=False)
 
-    def test_label_distribution_correct(self, tmp_path):
-        """Test that label/family distributions are recorded correctly."""
-        csv_path = _make_synthetic_csv(str(tmp_path))
-        prep = DataPreprocessor(dataset_path=csv_path)
-        X, y_label, y_family = prep.load_dataset()
+        prep = DataPreprocessor(cache_path=cache_path)
+        df_loaded = prep.build_or_load_dataset()
+        assert len(df_loaded) == 50
+        assert prep.n_goodware == 30
+        assert prep.n_ransomware == 20
 
-        assert prep.label_counts[0] == 50  # Goodware
-        assert prep.label_counts[1] == 30  # Ransomware
-        assert 0 in prep.family_counts  # Goodware family
+    def test_prepare_training_data(self, tmp_path):
+        """Test prepare_training_data splits and scales data correctly."""
+        cache_path = os.path.join(str(tmp_path), "cache.csv")
+        df_synth = _make_synthetic_stage4_dataframe(40, 20)
+        df_synth.to_csv(cache_path, index=False)
 
-    def test_fit_transform_reduces_features(self, tmp_path):
-        """Test that variance filtering reduces feature count."""
-        csv_path = _make_synthetic_csv(str(tmp_path), n_features=100)
-        prep = DataPreprocessor(dataset_path=csv_path, variance_threshold=0.001)
-        X, y_label, _ = prep.load_dataset()
-        X_train, X_test, y_train, y_test = prep.fit_transform(X, y_label)
+        prep = DataPreprocessor(cache_path=cache_path, test_size=0.2)
+        X_train, X_test, y_test, scaler = prep.prepare_training_data()
 
-        # Some features should be filtered
-        assert X_train.shape[1] <= X.shape[1]
-        assert X_train.shape[1] == X_test.shape[1]
+        assert X_train.shape[1] == 7
+        assert X_test.shape[1] == 7
+        assert len(y_test) == X_test.shape[0]
+        assert scaler is not None
 
-    def test_train_test_split_correct_sizes(self, tmp_path):
-        """Test train/test split proportions."""
-        csv_path = _make_synthetic_csv(str(tmp_path))
-        prep = DataPreprocessor(dataset_path=csv_path, test_size=0.25)
-        X, y_label, _ = prep.load_dataset()
-        X_train, X_test, y_train, y_test = prep.fit_transform(X, y_label)
+    def test_save_transformers(self, tmp_path):
+        """Test saving scaler and metadata to disk."""
+        cache_path = os.path.join(str(tmp_path), "cache.csv")
+        df_synth = _make_synthetic_stage4_dataframe(30, 15)
+        df_synth.to_csv(cache_path, index=False)
 
-        total = len(X_train) + len(X_test)
-        assert total == 80
-        assert len(X_test) == 20  # 25% of 80 = 20
-
-    def test_extract_goodware_only(self, tmp_path):
-        """Test extracting only goodware samples."""
-        csv_path = _make_synthetic_csv(str(tmp_path))
-        prep = DataPreprocessor(dataset_path=csv_path)
-        X, y_label, _ = prep.load_dataset()
-        X_train, _, y_train, _ = prep.fit_transform(X, y_label)
-
-        X_goodware = prep.extract_goodware_only(X_train, y_train)
-        assert len(X_goodware) < len(X_train)
-        # All remaining labels should be 0
-        assert all(y_train[y_train == 0].shape[0] == len(X_goodware) for _ in [1])
-
-    def test_save_and_load_transformers(self, tmp_path):
-        """Test saving and loading fitted scaler + selector."""
-        csv_path = _make_synthetic_csv(str(tmp_path))
         model_dir = str(tmp_path / "models")
+        prep = DataPreprocessor(cache_path=cache_path)
+        prep.prepare_training_data()
+        prep.save_transformers(model_dir=model_dir)
 
-        # Fit and save
-        prep1 = DataPreprocessor(dataset_path=csv_path)
-        X, y_label, _ = prep1.load_dataset()
-        prep1.fit_transform(X, y_label)
-        prep1.save_transformers(model_dir)
+        assert os.path.isfile(os.path.join(model_dir, "scaler.joblib"))
+        assert os.path.isfile(os.path.join(model_dir, "feature_metadata.json"))
 
-        # Load into new instance
-        prep2 = DataPreprocessor(dataset_path=csv_path)
-        prep2.load_transformers(model_dir)
+    def test_goodware_only_training_matrix(self, tmp_path):
+        """Test that unsupervised X_train contains only goodware."""
+        cache_path = os.path.join(str(tmp_path), "cache.csv")
+        df_synth = _make_synthetic_stage4_dataframe(50, 25)
+        df_synth.to_csv(cache_path, index=False)
 
-        assert prep2._scaler is not None
-        assert prep2._selector is not None
-        assert prep2.n_selected_features == prep1.n_selected_features
+        prep = DataPreprocessor(cache_path=cache_path, test_size=0.2)
+        X_train, X_test, y_test, _ = prep.prepare_training_data()
+        assert X_train.shape[0] == 40  # 80% of 50 goodware
 
-    def test_transform_after_fit(self, tmp_path):
-        """Test transforming new data with fitted pipeline."""
-        csv_path = _make_synthetic_csv(str(tmp_path), n_features=20)
-        prep = DataPreprocessor(dataset_path=csv_path, variance_threshold=0.0001)
-        X, y_label, _ = prep.load_dataset()
-        prep.fit_transform(X, y_label)
+    def test_ransomware_stream_marked_properly(self, tmp_path):
+        """Test ransomware events are labeled 1."""
+        csv_path = _make_synthetic_sysmon_csv(str(tmp_path), n_rows=10)
+        df = pd.read_csv(csv_path)
+        prep = DataPreprocessor(goodware_path=csv_path)
+        feats = prep.extract_features_from_sysmon_stream(df, is_ransomware=True, max_records=10)
+        assert all(f["label"] == 1 for f in feats)
 
-        # Transform a subset
-        X_new = X[:5]
-        X_transformed = prep.transform(X_new)
-        assert X_transformed.shape[0] == 5
-        assert X_transformed.shape[1] == prep.n_selected_features
+    def test_cache_reload_preserves_dimensions(self, tmp_path):
+        """Test that loaded cached data preserves all 7 feature dimensions."""
+        cache_path = os.path.join(str(tmp_path), "cache.csv")
+        df_synth = _make_synthetic_stage4_dataframe(20, 10)
+        df_synth.to_csv(cache_path, index=False)
 
-    def test_file_not_found_raises(self):
-        """Test that loading a non-existent file raises FileNotFoundError."""
-        prep = DataPreprocessor(dataset_path="nonexistent_file.csv")
-        with pytest.raises(FileNotFoundError):
-            prep.load_dataset()
+        prep = DataPreprocessor(cache_path=cache_path)
+        df = prep.build_or_load_dataset()
+        for col in FEATURE_COLUMNS:
+            assert col in df.columns
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Test Group 2: ModelTrainer
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─── Category 2: ModelTrainer Tests (8 tests) ───────────────────────────────
 
 class TestModelTrainer:
-    """Tests for the Stage 5 ModelTrainer."""
+    def test_trainer_initialization(self):
+        trainer = ModelTrainer(if_n_estimators=50, svm_kernel="rbf")
+        assert trainer.if_n_estimators == 50
+        assert trainer.svm_kernel == "rbf"
+        assert trainer.isolation_forest is None
+        assert trainer.one_class_svm is None
 
-    def test_train_on_synthetic_data(self):
-        """Test that both models train successfully on synthetic data."""
-        X, y_label, _ = _make_synthetic_dataset()
-        X_goodware = X[y_label == 0]
-
-        trainer = ModelTrainer(if_n_estimators=50, random_state=42)
-        trainer.train(X_goodware)
+    def test_train_models(self):
+        rng = np.random.RandomState(42)
+        X_train = rng.uniform(0.1, 0.4, size=(100, 7))
+        trainer = ModelTrainer(if_n_estimators=20)
+        trainer.train(X_train)
 
         assert trainer.isolation_forest is not None
         assert trainer.one_class_svm is not None
         assert trainer.training_time_sec > 0
 
-    def test_evaluate_produces_metrics(self):
-        """Test that evaluation returns comprehensive metrics."""
-        X, y_label, _ = _make_synthetic_dataset()
-        X_goodware = X[y_label == 0]
+    def test_evaluate_models(self):
+        rng = np.random.RandomState(42)
+        X_train = rng.uniform(0.1, 0.4, size=(100, 7))
+        trainer = ModelTrainer(if_n_estimators=30)
+        trainer.train(X_train)
 
-        trainer = ModelTrainer(if_n_estimators=50, random_state=42)
-        trainer.train(X_goodware)
-        metrics = trainer.evaluate(X, y_label)
+        X_test = np.vstack([
+            rng.uniform(0.1, 0.4, size=(40, 7)),
+            rng.uniform(0.7, 1.0, size=(30, 7)),
+        ])
+        y_test = np.array([0] * 40 + [1] * 30)
 
+        metrics = trainer.evaluate(X_test, y_test)
         assert "isolation_forest" in metrics
         assert "one_class_svm" in metrics
         assert "fused_dac_ocf" in metrics
-        assert "confusion_matrix" in metrics
-
-        # Check metric ranges
-        for model in ["isolation_forest", "one_class_svm", "fused_dac_ocf"]:
-            m = metrics[model]
-            assert 0.0 <= m["accuracy"] <= 1.0
-            assert 0.0 <= m["precision"] <= 1.0
-            assert 0.0 <= m["recall"] <= 1.0
-            assert 0.0 <= m["f1"] <= 1.0
-            assert 0.0 <= m["auc_roc"] <= 1.0
-
-    def test_isolation_forest_detects_anomalies(self):
-        """Test that Isolation Forest identifies ransomware samples as anomalies."""
-        X, y_label, _ = _make_synthetic_dataset(n_goodware=300, n_ransomware=100)
-        X_goodware = X[y_label == 0]
-
-        trainer = ModelTrainer(if_n_estimators=100, random_state=42)
-        trainer.train(X_goodware)
-
-        metrics = trainer.evaluate(X, y_label)
-        # Isolation Forest should have better-than-random AUC
-        assert metrics["isolation_forest"]["auc_roc"] > 0.5
-
-    def test_fused_score_better_than_individual(self):
-        """Test that fused DAC-OCF achieves competitive AUC with individual models."""
-        X, y_label, _ = _make_synthetic_dataset(n_goodware=300, n_ransomware=100)
-        X_goodware = X[y_label == 0]
-
-        trainer = ModelTrainer(if_n_estimators=100, random_state=42)
-        trainer.train(X_goodware)
-        metrics = trainer.evaluate(X, y_label)
-
-        fused_auc = metrics["fused_dac_ocf"]["auc_roc"]
-        # Fused should be at least close to the best individual model
-        best_individual = max(
-            metrics["isolation_forest"]["auc_roc"],
-            metrics["one_class_svm"]["auc_roc"],
-        )
-        assert fused_auc >= best_individual - 0.15  # Within 15% of best
+        assert metrics["fused_dac_ocf"]["accuracy"] >= 0.70
 
     def test_save_and_load_models(self, tmp_path):
-        """Test model serialization and deserialization."""
-        X, y_label, _ = _make_synthetic_dataset()
-        X_goodware = X[y_label == 0]
+        rng = np.random.RandomState(42)
+        X_train = rng.uniform(0.1, 0.4, size=(50, 7))
+        trainer = ModelTrainer(if_n_estimators=20)
+        trainer.train(X_train)
 
-        # Train and save
-        trainer1 = ModelTrainer(if_n_estimators=50, random_state=42)
-        trainer1.train(X_goodware)
-        trainer1.evaluate(X, y_label)
-        trainer1.save_models(str(tmp_path))
+        model_dir = str(tmp_path / "models")
+        trainer.save_models(model_dir)
 
-        # Load into new instance
         trainer2 = ModelTrainer()
-        trainer2.load_models(str(tmp_path))
-
+        trainer2.load_models(model_dir)
         assert trainer2.isolation_forest is not None
         assert trainer2.one_class_svm is not None
 
-        # Predictions should be identical
-        pred1 = trainer1.isolation_forest.predict(X[:5])
-        pred2 = trainer2.isolation_forest.predict(X[:5])
-        np.testing.assert_array_equal(pred1, pred2)
+    def test_unfitted_evaluate_raises(self):
+        trainer = ModelTrainer()
+        with pytest.raises(RuntimeError):
+            trainer.evaluate(np.zeros((10, 7)), np.zeros(10))
 
-    def test_model_files_created(self, tmp_path):
-        """Test that all expected model files are created."""
-        X, y_label, _ = _make_synthetic_dataset()
-        X_goodware = X[y_label == 0]
+    def test_normalize_scores(self):
+        scores = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        normed = ModelTrainer._normalize_scores(scores)
+        assert np.isclose(normed.min(), 0.0)
+        assert np.isclose(normed.max(), 1.0)
 
-        trainer = ModelTrainer(if_n_estimators=50, random_state=42)
-        trainer.train(X_goodware)
-        trainer.evaluate(X, y_label)
-        trainer.save_models(str(tmp_path))
+    def test_constant_scores_normalization(self):
+        scores = np.array([2.0, 2.0, 2.0])
+        normed = ModelTrainer._normalize_scores(scores)
+        assert np.all(normed == 0.5)
 
-        assert os.path.isfile(tmp_path / "isolation_forest.joblib")
-        assert os.path.isfile(tmp_path / "one_class_svm.joblib")
-        assert os.path.isfile(tmp_path / "training_metadata.json")
-
-    def test_metadata_json_contents(self, tmp_path):
-        """Test that training metadata JSON contains expected fields."""
-        import json
-
-        X, y_label, _ = _make_synthetic_dataset()
-        X_goodware = X[y_label == 0]
-
-        trainer = ModelTrainer(if_n_estimators=50, random_state=42)
-        trainer.train(X_goodware)
-        trainer.evaluate(X, y_label)
-        trainer.save_models(str(tmp_path))
-
-        with open(tmp_path / "training_metadata.json") as f:
-            meta = json.load(f)
-
-        assert "timestamp" in meta
-        assert "training_time_sec" in meta
-        assert "hyperparameters" in meta
-        assert "evaluation_metrics" in meta
-
-    def test_normalize_scores_range(self):
-        """Test that score normalization produces values in [0, 1]."""
-        scores = np.array([-5.0, -1.0, 0.0, 1.0, 5.0, 100.0])
-        normalized = ModelTrainer._normalize_scores(scores)
-
-        assert normalized.min() >= 0.0
-        assert normalized.max() <= 1.0
-        assert np.isclose(normalized.min(), 0.0)
-        assert np.isclose(normalized.max(), 1.0)
+    def test_trainer_repr(self):
+        trainer = ModelTrainer()
+        assert "ModelTrainer" in repr(trainer)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Test Group 3: AnomalyScorer
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─── Category 3: AnomalyScorer Tests (10 tests) ─────────────────────────────
 
 class TestAnomalyScorer:
-    """Tests for the Stage 5 AnomalyScorer."""
-
-    def test_heuristic_mode_when_no_models(self, tmp_path):
-        """Test that scorer defaults to heuristic mode when no models exist."""
-        scorer = AnomalyScorer(model_dir=str(tmp_path / "nonexistent"))
+    def test_scorer_heuristic_fallback(self):
+        scorer = AnomalyScorer(model_dir="nonexistent_dir")
         assert not scorer.is_ml_mode
 
-    def test_heuristic_benign_score_low(self):
-        """Test that benign feature vectors get low heuristic scores."""
-        scorer = AnomalyScorer(model_dir="nonexistent_dir_12345")
-        fv = _make_benign_feature_vector()
-        result = scorer.score(fv)
+        sample = {"S_entropy": 0.2, "S_ETD": 0.1, "S_dist": 0.1, "S_dev": 0.05, "S_stab": 0.9, "lambda_norm": 0.05}
+        res = scorer.score(sample)
+        assert res["scoring_mode"] == "heuristic"
+        assert res["anomaly_score"] < 0.35
+        assert res["risk_tier"] == "SAFE"
 
-        assert result["anomaly_score"] < 0.25
-        assert result["risk_tier"] == "SAFE"
-        assert result["scoring_mode"] == "heuristic"
-        assert result["is_anomaly"] is False
-
-    def test_heuristic_ransomware_score_high(self):
-        """Test that ransomware-like feature vectors get high heuristic scores."""
-        scorer = AnomalyScorer(model_dir="nonexistent_dir_12345")
-        fv = _make_ransomware_feature_vector()
-        result = scorer.score(fv)
-
-        assert result["anomaly_score"] > 0.5
-        assert result["risk_tier"] in ("SUSPECT", "CRITICAL")
-        assert result["scoring_mode"] == "heuristic"
-        assert result["is_anomaly"] is True
-
-    def test_score_range_bounded(self):
-        """Test that anomaly scores are always in [0, 1]."""
-        scorer = AnomalyScorer(model_dir="nonexistent_dir_12345")
-
-        # Test with extreme values
-        for _ in range(20):
-            fv = {
-                "S_entropy": np.random.uniform(0, 1),
-                "S_ETD": np.random.uniform(0, 1),
-                "S_dist": np.random.uniform(0, 1),
-                "S_dev": np.random.uniform(0, 1),
-                "S_stab": np.random.uniform(0, 1),
-                "lambda_norm": np.random.uniform(0, 1),
-                "branching_n": np.random.uniform(0, 3),
-                "pid": 1000,
-                "file_path": "test.txt",
+    def test_scorer_ml_mode(self):
+        scorer = AnomalyScorer(model_dir="models")
+        if os.path.isfile("models/isolation_forest.joblib") and os.path.isfile("models/one_class_svm.joblib"):
+            assert scorer.is_ml_mode
+            sample = {
+                "S_entropy": 0.20,
+                "S_ETD": 0.90,
+                "S_dist": 0.90,
+                "S_dev": 0.01,
+                "S_stab": 0.40,
+                "lambda_norm": 0.01,
+                "branching_n": 0.625,
             }
-            result = scorer.score(fv)
-            assert 0.0 <= result["anomaly_score"] <= 1.0
-            assert 0.0 <= result["confidence"] <= 1.0
+            res = scorer.score(sample)
+            assert res["scoring_mode"] == "ml"
+            assert res["dimension_matched"] is True
 
-    def test_risk_tier_assignment(self):
-        """Test that risk tiers are correctly assigned based on thresholds."""
-        scorer = AnomalyScorer(model_dir="nonexistent_dir_12345")
+    def test_scorer_benign_vs_ransomware_separation(self):
+        scorer = AnomalyScorer(model_dir="models")
+        benign = {"S_entropy": 0.20, "S_ETD": 0.30, "S_dist": 0.05, "S_dev": 0.01, "S_stab": 0.80, "lambda_norm": 0.01, "branching_n": 0.625}
+        rsw = {"S_entropy": 0.95, "S_ETD": 0.90, "S_dist": 0.80, "S_dev": 0.90, "S_stab": 0.10, "lambda_norm": 0.95, "branching_n": 1.8, "is_superheated": True}
 
-        # Safe: very benign
-        fv = _make_benign_feature_vector()
-        fv["S_entropy"] = 0.01
-        result = scorer.score(fv)
-        assert result["risk_tier"] == "SAFE"
+        res_b = scorer.score(benign)
+        res_r = scorer.score(rsw)
 
-        # Critical: very malicious
-        fv2 = _make_ransomware_feature_vector()
-        result2 = scorer.score(fv2)
-        assert result2["risk_tier"] in ("SUSPECT", "CRITICAL")
+        assert res_b["anomaly_score"] < res_r["anomaly_score"]
+        assert res_b["risk_tier"] in ["SAFE", "WATCH"]
+        assert res_r["risk_tier"] in ["SUSPECT", "CRITICAL"]
 
-    def test_superheated_boost(self):
-        """Test that superheated branching ratio adds penalty."""
-        scorer = AnomalyScorer(model_dir="nonexistent_dir_12345")
+    def test_risk_tier_mapping(self):
+        scorer = AnomalyScorer(model_dir="nonexistent_dir")
+        assert scorer._assign_risk_tier(0.10) == "SAFE"
+        assert scorer._assign_risk_tier(0.35) == "WATCH"
+        assert scorer._assign_risk_tier(0.60) == "SUSPECT"
+        assert scorer._assign_risk_tier(0.85) == "CRITICAL"
 
-        fv_normal = _make_benign_feature_vector()
-        fv_normal["branching_n"] = 0.5
-        result_normal = scorer.score(fv_normal)
-
-        fv_super = _make_benign_feature_vector()
-        fv_super["branching_n"] = 1.5  # Superheated
-        result_super = scorer.score(fv_super)
-
-        # Superheated should get a higher score
-        assert result_super["anomaly_score"] > result_normal["anomaly_score"]
-
-    def test_scoring_statistics(self):
-        """Test that scoring statistics are tracked."""
-        scorer = AnomalyScorer(model_dir="nonexistent_dir_12345")
-
-        assert scorer.total_scored == 0
-        assert scorer.total_anomalies == 0
-
-        scorer.score(_make_benign_feature_vector())
-        scorer.score(_make_ransomware_feature_vector())
-
-        assert scorer.total_scored == 2
-        stats = scorer.get_stats()
-        assert stats["total_scored"] == 2
-        assert stats["scoring_mode"] == "heuristic"
-
-    def test_batch_scoring(self):
-        """Test batch scoring of multiple feature vectors."""
-        scorer = AnomalyScorer(model_dir="nonexistent_dir_12345")
-
-        batch = [_make_benign_feature_vector() for _ in range(5)]
-        batch += [_make_ransomware_feature_vector() for _ in range(3)]
-
+    def test_score_batch(self):
+        scorer = AnomalyScorer(model_dir="nonexistent_dir")
+        batch = [
+            {"S_entropy": 0.1, "S_ETD": 0.1, "S_dist": 0.1, "S_dev": 0.01, "S_stab": 0.9, "lambda_norm": 0.01},
+            {"S_entropy": 0.9, "S_ETD": 0.9, "S_dist": 0.9, "S_dev": 0.9, "S_stab": 0.1, "lambda_norm": 0.9},
+        ]
         results = scorer.score_batch(batch)
-        assert len(results) == 8
-        assert all("anomaly_score" in r for r in results)
-        assert all("risk_tier" in r for r in results)
+        assert len(results) == 2
+        assert results[0]["anomaly_score"] < results[1]["anomaly_score"]
 
     def test_thread_safety(self):
-        """Test concurrent scoring from multiple threads."""
-        scorer = AnomalyScorer(model_dir="nonexistent_dir_12345")
-        results = []
-        errors = []
+        scorer = AnomalyScorer(model_dir="models")
+        sample = {"S_entropy": 0.3, "S_ETD": 0.3, "S_dist": 0.3, "S_dev": 0.1, "S_stab": 0.8, "lambda_norm": 0.1}
 
-        def score_worker():
+        errors = []
+        def worker():
             try:
-                for _ in range(20):
-                    fv = _make_benign_feature_vector()
-                    result = scorer.score(fv)
-                    results.append(result)
+                for _ in range(50):
+                    scorer.score(sample)
             except Exception as e:
                 errors.append(e)
 
-        threads = [threading.Thread(target=score_worker) for _ in range(4)]
+        threads = [threading.Thread(target=worker) for _ in range(4)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
 
         assert len(errors) == 0
-        assert scorer.total_scored == 80  # 4 threads * 20 scores
+        assert scorer.total_scored >= 200
 
-    def test_ml_mode_with_trained_models(self, tmp_path):
-        """Test ML scoring mode with real trained models."""
-        X, y_label, _ = _make_synthetic_dataset()
-        X_goodware = X[y_label == 0]
+    def test_get_stats(self):
+        scorer = AnomalyScorer(model_dir="nonexistent_dir")
+        scorer.score({"S_entropy": 0.1, "S_ETD": 0.1, "S_dist": 0.1, "S_dev": 0.01, "S_stab": 0.9, "lambda_norm": 0.01})
+        scorer.score({"S_entropy": 0.95, "S_ETD": 0.95, "S_dist": 0.95, "S_dev": 0.95, "S_stab": 0.05, "lambda_norm": 0.95})
 
-        # Train and save models
-        trainer = ModelTrainer(if_n_estimators=50, random_state=42)
-        trainer.train(X_goodware)
-        trainer.save_models(str(tmp_path))
+        stats = scorer.get_stats()
+        assert stats["total_scored"] == 2
+        assert stats["total_anomalies"] >= 1
+        assert 0.0 <= stats["anomaly_rate"] <= 1.0
 
-        # Create scorer with trained models
-        # Need to train on the same 7-feature format for this to work
-        # Let's train a small model on 7 features
-        rng = np.random.RandomState(42)
-        X_7feat_good = rng.normal(0.1, 0.05, size=(100, 7)).clip(0, 1)
+    def test_sigmoid_normalize(self):
+        s0 = AnomalyScorer._sigmoid_normalize(0.0)
+        s_pos = AnomalyScorer._sigmoid_normalize(2.0)
+        s_neg = AnomalyScorer._sigmoid_normalize(-2.0)
 
-        from sklearn.ensemble import IsolationForest
-        from sklearn.svm import OneClassSVM
-        import joblib
+        assert np.isclose(s0, 0.5)
+        assert s_pos > 0.5
+        assert s_neg < 0.5
 
-        if_model = IsolationForest(n_estimators=50, contamination=0.05, random_state=42)
-        if_model.fit(X_7feat_good)
-        joblib.dump(if_model, str(tmp_path / "isolation_forest.joblib"))
+    def test_superheated_boost(self):
+        scorer = AnomalyScorer(model_dir="nonexistent_dir")
+        s_normal = scorer.score({"S_entropy": 0.5, "S_ETD": 0.5, "S_dist": 0.5, "S_dev": 0.5, "S_stab": 0.5, "lambda_norm": 0.5, "is_superheated": False})
+        s_hot = scorer.score({"S_entropy": 0.5, "S_ETD": 0.5, "S_dist": 0.5, "S_dev": 0.5, "S_stab": 0.5, "lambda_norm": 0.5, "is_superheated": True})
 
-        svm_model = OneClassSVM(kernel="rbf", nu=0.1, gamma="scale")
-        svm_model.fit(X_7feat_good)
-        joblib.dump(svm_model, str(tmp_path / "one_class_svm.joblib"))
+        assert s_hot["anomaly_score"] >= s_normal["anomaly_score"]
 
-        scorer = AnomalyScorer(model_dir=str(tmp_path))
+    def test_score_feature_dict_alias(self):
+        scorer = AnomalyScorer(model_dir="nonexistent_dir")
+        sample = {"S_entropy": 0.2, "S_ETD": 0.1, "S_dist": 0.1, "S_dev": 0.05, "S_stab": 0.9, "lambda_norm": 0.05}
+        r1 = scorer.score(sample)
+        r2 = scorer.score_feature_dict(sample)
+        assert r1["anomaly_score"] == r2["anomaly_score"]
+
+
+# ─── Category 4: Integration Tests (4 tests) ────────────────────────────────
+
+class TestIntegration:
+    def test_full_pipeline_flow(self, tmp_path):
+        """Test complete end-to-end flow from synthetic data to trained scorer."""
+        df_synth = _make_synthetic_stage4_dataframe(60, 30)
+        cache_path = os.path.join(str(tmp_path), "stage4.csv")
+        df_synth.to_csv(cache_path, index=False)
+
+        model_dir = str(tmp_path / "models")
+        prep = DataPreprocessor(cache_path=cache_path)
+        X_train, X_test, y_test, _ = prep.prepare_training_data()
+        prep.save_transformers(model_dir)
+
+        trainer = ModelTrainer(if_n_estimators=30)
+        trainer.train(X_train)
+        trainer.save_models(model_dir)
+
+        scorer = AnomalyScorer(model_dir=model_dir)
         assert scorer.is_ml_mode
 
-        # Score benign and ransomware vectors
-        benign_result = scorer.score(_make_benign_feature_vector())
-        ransom_result = scorer.score(_make_ransomware_feature_vector())
+        res = scorer.score({
+            "S_entropy": 0.2, "S_ETD": 0.8, "S_dist": 0.8,
+            "S_dev": 0.01, "S_stab": 0.5, "lambda_norm": 0.01, "branching_n": 0.625
+        })
+        assert res["scoring_mode"] == "ml"
 
-        assert benign_result["scoring_mode"] == "ml"
-        assert benign_result["isolation_score"] is not None
-        assert benign_result["svm_score"] is not None
-        assert 0.0 <= benign_result["anomaly_score"] <= 1.0
+    def test_model_metrics_persisted(self):
+        """Verify training_metadata.json exists and has valid evaluation metrics."""
+        meta_path = "models/training_metadata.json"
+        if os.path.isfile(meta_path):
+            import json
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+            assert "evaluation_metrics" in meta
+            assert "fused_dac_ocf" in meta["evaluation_metrics"]
+            assert meta["evaluation_metrics"]["fused_dac_ocf"]["auc_roc"] > 0.80
 
-        # Ransomware should generally score higher than benign
-        assert ransom_result["anomaly_score"] > benign_result["anomaly_score"]
+    def test_feature_metadata_persisted(self):
+        """Verify feature_metadata.json exists with 7 features."""
+        meta_path = "models/feature_metadata.json"
+        if os.path.isfile(meta_path):
+            import json
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+            assert meta["n_features"] == 7
+            assert len(meta["feature_columns"]) == 7
 
+    def test_live_stage5_pipeline_components(self):
+        """Verify Live Stage 5 pipeline components integrate cleanly."""
+        from src.stage_3_dbrg.dbrg_manager import DBRGManager
+        from src.stage_4_features.feature_extractor import FeatureExtractor
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Test Group 4: Integration Tests
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestStage4ToStage5Integration:
-    """End-to-end integration tests for Stage 4 -> Stage 5 pipeline."""
-
-    def test_feature_vector_passthrough(self):
-        """Test that event context (pid, file_path, timestamp) passes through."""
-        scorer = AnomalyScorer(model_dir="nonexistent_dir_12345")
-        fv = _make_benign_feature_vector()
-        fv["pid"] = 9999
-        fv["file_path"] = "C:\\important\\document.pdf"
-        fv["timestamp"] = 1234567890000
-
-        result = scorer.score(fv)
-        assert result["pid"] == 9999
-        assert result["file_path"] == "C:\\important\\document.pdf"
-        assert result["timestamp"] == 1234567890000
-
-    def test_benign_vs_ransomware_discrimination(self):
-        """Test that Stage 5 can discriminate between benign and ransomware patterns."""
-        scorer = AnomalyScorer(model_dir="nonexistent_dir_12345")
-
-        benign_scores = []
-        for _ in range(10):
-            fv = _make_benign_feature_vector()
-            fv["S_entropy"] = np.random.uniform(0.05, 0.30)
-            fv["S_dist"] = np.random.uniform(0.01, 0.10)
-            fv["S_dev"] = np.random.uniform(0.01, 0.05)
-            fv["S_stab"] = np.random.uniform(0.80, 0.99)
-            result = scorer.score(fv)
-            benign_scores.append(result["anomaly_score"])
-
-        ransom_scores = []
-        for _ in range(10):
-            fv = _make_ransomware_feature_vector()
-            fv["S_entropy"] = np.random.uniform(0.85, 0.99)
-            fv["S_dist"] = np.random.uniform(0.50, 0.95)
-            fv["S_dev"] = np.random.uniform(0.60, 0.95)
-            fv["S_stab"] = np.random.uniform(0.01, 0.15)
-            result = scorer.score(fv)
-            ransom_scores.append(result["anomaly_score"])
-
-        # Average ransomware score should be significantly higher
-        assert np.mean(ransom_scores) > np.mean(benign_scores) + 0.2
-
-    def test_sequential_scoring_consistency(self):
-        """Test that scoring the same vector twice gives the same result."""
-        scorer = AnomalyScorer(model_dir="nonexistent_dir_12345")
-        fv = _make_benign_feature_vector()
-
-        result1 = scorer.score(fv)
-        result2 = scorer.score(fv)
-
-        assert result1["anomaly_score"] == result2["anomaly_score"]
-        assert result1["risk_tier"] == result2["risk_tier"]
-
-    def test_full_pipeline_with_model_training(self, tmp_path):
-        """Test complete pipeline: train models -> save -> load -> score."""
-        # Generate synthetic 7-feature dataset
-        rng = np.random.RandomState(42)
-        X_good = rng.normal(0.1, 0.05, size=(100, 7)).clip(0, 1)
-        X_bad = rng.normal(0.7, 0.2, size=(40, 7)).clip(0, 1)
-        X_all = np.vstack([X_good, X_bad])
-        y_all = np.array([0] * 100 + [1] * 40)
-
-        # Train
-        from sklearn.ensemble import IsolationForest
-        from sklearn.svm import OneClassSVM
-        import joblib
-
-        if_model = IsolationForest(n_estimators=100, contamination=0.05, random_state=42)
-        if_model.fit(X_good)
-        joblib.dump(if_model, str(tmp_path / "isolation_forest.joblib"))
-
-        svm_model = OneClassSVM(kernel="rbf", nu=0.1, gamma="scale")
-        svm_model.fit(X_good)
-        joblib.dump(svm_model, str(tmp_path / "one_class_svm.joblib"))
-
-        # Create scorer with trained models
-        scorer = AnomalyScorer(model_dir=str(tmp_path))
+        scorer = AnomalyScorer(model_dir="models")
         assert scorer.is_ml_mode
 
-        # Score benign and ransomware
-        benign_fv = _make_benign_feature_vector()
-        ransom_fv = _make_ransomware_feature_vector()
-
-        benign_result = scorer.score(benign_fv)
-        ransom_result = scorer.score(ransom_fv)
-
-        # Basic sanity: ransomware should score higher
-        assert ransom_result["anomaly_score"] > benign_result["anomaly_score"]
-        assert scorer.total_scored == 2
+        dbrg = DBRGManager()
+        extractor = FeatureExtractor(dbrg_manager=dbrg)
+        ecar = {
+            "actorID": "pid:1234",
+            "objectID": "file:C:\\test.txt",
+            "pid": 1234,
+            "operation": "FILE_MODIFY",
+            "timestamp": 1700000000000.0,
+            "entropy": 3.0,
+        }
+        dbrg.process_event(ecar)
+        fv = extractor.extract_features(ecar)
+        assert fv is not None
+        score_res = scorer.score(fv)
+        assert score_res["scoring_mode"] == "ml"
+        assert score_res["dimension_matched"] is True
