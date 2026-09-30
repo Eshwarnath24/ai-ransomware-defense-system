@@ -24,5 +24,7 @@ logs/
 .venv/
 env/
 venv/
-.vscode/
-.idea/
+# Runtime test directories and local data
+monitored_test_dir/
+Dataset/RADAR-v0.0.1-beta/
+Dataset/goodware-logs.csv
