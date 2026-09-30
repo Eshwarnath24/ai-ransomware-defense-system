@@ -1,0 +1,15 @@
+{
+  "feature_columns": [
+    "S_entropy",
+    "S_ETD",
+    "S_dist",
+    "S_dev",
+    "S_stab",
+    "lambda_norm",
+    "branching_n"
+  ],
+  "n_features": 7,
+  "n_samples": 8054,
+  "n_goodware": 4000,
+  "n_ransomware": 4054
+}

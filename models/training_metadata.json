@@ -1,39 +1,39 @@
 {
-  "timestamp": "2026-09-23T12:08:26",
-  "training_time_sec": 0.8993465900421143,
+  "timestamp": "2026-09-30T22:10:58",
+  "training_time_sec": 0.4664785861968994,
   "hyperparameters": {
     "isolation_forest": {
       "n_estimators": 200,
-      "contamination": 0.05,
+      "contamination": 0.01,
       "max_features": 0.8
     },
     "one_class_svm": {
       "kernel": "rbf",
-      "nu": 0.1,
-      "gamma": "scale"
+      "nu": 0.01,
+      "gamma": "0.1"
     }
   },
   "evaluation_metrics": {
     "isolation_forest": {
-      "accuracy": 0.6032786885245902,
-      "precision": 0.2727272727272727,
-      "recall": 0.02586206896551724,
-      "f1": 0.047244094488188976,
-      "auc_roc": 0.6536216018974639
+      "accuracy": 0.553072625698324,
+      "precision": 0.9026548672566371,
+      "recall": 0.12577065351418001,
+      "f1": 0.22077922077922077,
+      "auc_roc": 0.8635773736128237
     },
     "one_class_svm": {
-      "accuracy": 0.6196721311475409,
-      "precision": 0.5,
-      "recall": 0.19827586206896552,
-      "f1": 0.2839506172839506,
-      "auc_roc": 0.6205072067141033
+      "accuracy": 0.9857231533209186,
+      "precision": 0.993734335839599,
+      "recall": 0.9778051787916153,
+      "f1": 0.9857054070851461,
+      "auc_roc": 0.9869297163995068
     },
     "fused_dac_ocf": {
-      "accuracy": 0.6032786885245902,
-      "precision": 0.4489795918367347,
-      "recall": 0.1896551724137931,
-      "f1": 0.26666666666666666,
-      "auc_roc": 0.6405765371282612,
+      "accuracy": 0.9671011793916822,
+      "precision": 0.9386574074074074,
+      "recall": 1.0,
+      "f1": 0.9683582089552238,
+      "auc_roc": 0.9898612823674475,
       "fusion_weights": {
         "isolation_forest": 0.6,
         "one_class_svm": 0.4
@@ -41,41 +41,41 @@
     },
     "confusion_matrix": [
       [
-        162,
-        27
+        747,
+        53
       ],
       [
-        94,
-        22
+        0,
+        811
       ]
     ],
     "classification_report": {
       "Goodware": {
-        "precision": 0.6328125,
-        "recall": 0.8571428571428571,
-        "f1-score": 0.7280898876404495,
-        "support": 189.0
+        "precision": 1.0,
+        "recall": 0.93375,
+        "f1-score": 0.9657401422107305,
+        "support": 800.0
       },
       "Ransomware": {
-        "precision": 0.4489795918367347,
-        "recall": 0.1896551724137931,
-        "f1-score": 0.26666666666666666,
-        "support": 116.0
+        "precision": 0.9386574074074074,
+        "recall": 1.0,
+        "f1-score": 0.9683582089552238,
+        "support": 811.0
       },
-      "accuracy": 0.6032786885245902,
+      "accuracy": 0.9671011793916822,
       "macro avg": {
-        "precision": 0.5408960459183674,
-        "recall": 0.5233990147783251,
-        "f1-score": 0.4973782771535581,
-        "support": 305.0
+        "precision": 0.9693287037037037,
+        "recall": 0.9668749999999999,
+        "f1-score": 0.9670491755829771,
+        "support": 1611.0
       },
       "weighted avg": {
-        "precision": 0.5628957218133155,
-        "recall": 0.6032786885245902,
-        "f1-score": 0.5525977773684534,
-        "support": 305.0
+        "precision": 0.969119278341035,
+        "recall": 0.9671011793916822,
+        "f1-score": 0.9670581137375983,
+        "support": 1611.0
       }
     },
-    "training_time_sec": 0.8993465900421143
+    "training_time_sec": 0.4664785861968994
   }
 }
