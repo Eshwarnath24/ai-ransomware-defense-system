@@ -119,7 +119,7 @@ def main():
             if str(custom_p) not in watch_paths:
                 watch_paths.append(str(custom_p))
         else:
-            print(f"⚠️ Creating watched folder: {custom_p}")
+            print(f"Creating watched folder: {custom_p}")
             custom_p.mkdir(parents=True, exist_ok=True)
             watch_paths.append(str(custom_p))
 
@@ -127,6 +127,9 @@ def main():
     scorer = AnomalyScorer(model_dir=str(PROJECT_ROOT / "models"))
 
     print_banner(watch_paths, scorer)
+    print("  >> Monitor is RUNNING. Keep this terminal open.")
+    print("  >> Open a SECOND terminal and run:  python src/simulate_live_activity.py --mode ransomware")
+    print()
 
     raw_queue = queue.Queue(maxsize=10000)
     file_monitor = FileMonitor(paths=watch_paths, recursive=True)
@@ -146,16 +149,19 @@ def main():
 
     def process_ecar_event(ecar_event: dict):
         nonlocal event_count
-        # Stage 3
-        dbrg.process_event(ecar_event)
-        # Stage 4
-        fv = extractor.extract_features(ecar_event)
-        if fv:
-            # Stage 5
-            score_result = scorer.score(fv)
-            with lock:
-                event_count += 1
-                print(format_row(event_count, ecar_event, fv, score_result), flush=True)
+        try:
+            # Stage 3
+            dbrg.process_event(ecar_event)
+            # Stage 4
+            fv = extractor.extract_features(ecar_event)
+            if fv:
+                # Stage 5
+                score_result = scorer.score(fv)
+                with lock:
+                    event_count += 1
+                    print(format_row(event_count, ecar_event, fv, score_result), flush=True)
+        except Exception as e:
+            pass  # Silently skip problematic events
 
     queue_joiner = QueueJoiner(
         raw_queue=raw_queue,
@@ -171,13 +177,30 @@ def main():
     try:
         while True:
             time.sleep(0.5)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    except Exception as e:
+        print(f"\n[Live Monitor] Error: {e}")
+    finally:
         print("\n[Live Monitor] Stopping telemetry streams...")
-        file_monitor.stop()
-        process_monitor.stop()
-        queue_joiner.stop()
+        try:
+            file_monitor.stop()
+        except Exception:
+            pass
+        try:
+            process_monitor.stop()
+        except Exception:
+            pass
+        try:
+            queue_joiner.stop()
+        except Exception:
+            pass
         print(f"[Live Monitor] Stopped. Total events processed through Stages 1-5: {event_count}")
 
 
 if __name__ == "__main__":
+    # Suppress ALL logging to stderr — prevents PowerShell from treating
+    # Python log messages as errors and killing the process
+    logging.disable(logging.CRITICAL)
     main()
+

@@ -50,11 +50,11 @@ def run_benign_simulation(n_files: int = 5, delay: float = 0.5):
         time.sleep(delay)
 
 
-def run_ransomware_simulation(n_files: int = 10, delay: float = 0.05):
+def run_ransomware_simulation(n_files: int = 10, delay: float = 0.1):
     print(f"\n[Simulator] [RANSOMWARE] Starting rapid burst encryption simulation ({n_files} files)...")
     TARGET_DIR.mkdir(parents=True, exist_ok=True)
 
-    # First create vulnerable target files
+    # First create vulnerable target files (benign originals)
     target_files = []
     for i in range(1, n_files + 1):
         p = TARGET_DIR / f"financial_records_{i}.docx"
@@ -62,22 +62,32 @@ def run_ransomware_simulation(n_files: int = 10, delay: float = 0.05):
             f.write("CONFIDENTIAL ACCOUNT BALANCES AND LEDGER DATA " * 10)
         target_files.append(p)
 
-    time.sleep(0.5)
+    time.sleep(1.0)
     print("  [ATTACK] Launching rapid high-entropy encryption burst...")
 
-    # Rapidly overwrite with high-entropy pseudo-random ciphertext
+    # Rapidly write high-entropy encrypted ciphertext directly to .locked files
+    # This simulates ransomware reading the original, encrypting, and writing
+    # the ciphertext to a new file with .locked extension
     for p in target_files:
         encrypted_bytes = secrets.token_bytes(4096)
         encrypted_path = p.with_suffix(".docx.locked")
-        
-        # Overwrite with high entropy
-        with open(p, "wb") as f:
+
+        # Write high-entropy ciphertext directly to the .locked file
+        # (This ensures the monitor reads the actual encrypted content)
+        with open(encrypted_path, "wb") as f:
             f.write(encrypted_bytes)
-        
-        # Rename to simulate ransomware extension appending
-        if p.exists():
-            os.replace(p, encrypted_path)
-            
+            f.flush()
+            os.fsync(f.fileno())
+
+        # Small delay to let the monitor pick up and read the file content
+        time.sleep(delay)
+
+        # Delete the original (simulating ransomware destroying the plaintext)
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
         print(f"  [ENCRYPTED] High entropy written: {encrypted_path.name}")
         time.sleep(delay)
 
@@ -92,8 +102,8 @@ def main():
     elif args.mode == "ransomware":
         run_ransomware_simulation()
     elif args.mode == "mixed":
-        run_benign_simulation(n_files=3, delay=0.3)
-        time.sleep(0.8)
+        run_benign_simulation(n_files=3, delay=1.5)
+        time.sleep(1.0)
         run_ransomware_simulation(n_files=6, delay=0.08)
 
     print("\n[Simulator] Done! Check your live monitor window to see real-time classifications.\n")
