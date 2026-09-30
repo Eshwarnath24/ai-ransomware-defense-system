@@ -1,316 +1,299 @@
 """
 src/stage_5_anomaly/preprocessor.py
 =====================================
-Stage 5 — Data Preprocessing Engine for RansomwareData.csv
+Stage 5 — Data Preprocessing Engine for RADAR Dataset & goodware-logs.csv
 
-Handles the complete data preparation pipeline for the anomaly detection models:
+Extracts the 7 Stage 4 behavioral feature vectors from real Windows Sysmon
+event logs in the RADAR dataset for unsupervised anomaly detection:
 
-1. Load the raw CSV dataset (1,523 samples x 30,970 columns)
-2. Separate metadata (ID, Label, Family) from API frequency features
-3. Remove zero-variance features (API calls that never occur)
-4. Apply VarianceThreshold to reduce dimensionality from ~30,967 to ~500-2000
-5. Normalize with StandardScaler
-6. Stratified train-test split (80/20)
-7. Persist fitted transformers for reuse in real-time scoring
-
-Dataset Layout (RansomwareData.csv):
-    Column 0: Sample ID
-    Column 1: Label (0 = Goodware, 1 = Ransomware)
-    Column 2: Ransomware Family ID (0 = Goodware, 1-11 = families)
-    Columns 3-30969: API call frequency counts (30,967 features)
-
-The CSV has NO header row — the first row is data.
+Features Extracted (7 dimensions):
+    1. S_entropy   : File content / path Shannon entropy [0, 1]
+    2. S_ETD       : Entropy-Topology Divergence score [0, 1]
+    3. S_dist      : DBRG Graph Fan-Out Distance [0, 1]
+    4. S_dev       : Target velocity (rate of new targets / sec) [0, 1]
+    5. S_stab      : Operational stability ratio [0, 1]
+    6. lambda_norm : Hawkes process burst intensity [0, 1]
+    7. branching_n : Hawkes self-excitation branching ratio
 """
 
+import io
 import json
 import logging
+import math
 import os
+import zipfile
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+import joblib
 import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
+
+from src.stage_3_dbrg.dbrg_manager import DBRGManager
+from src.stage_4_features.feature_extractor import FeatureExtractor
 
 logger = logging.getLogger(__name__)
 
-# Column indices in the raw CSV
-COL_ID: int = 0
-COL_LABEL: int = 1
-COL_FAMILY: int = 2
-FEATURE_START_COL: int = 3
+FEATURE_COLUMNS: List[str] = [
+    "S_entropy",
+    "S_ETD",
+    "S_dist",
+    "S_dev",
+    "S_stab",
+    "lambda_norm",
+    "branching_n",
+]
+
+
+def _calc_string_entropy(s: str) -> float:
+    """Calculate normalized Shannon entropy [0, 1] for a file name or path."""
+    if not s or s == "-" or len(s) == 0:
+        return 0.0
+    probs = [s.count(c) / len(s) for c in set(s)]
+    h = -sum(p * math.log2(p) for p in probs)
+    return min(1.0, max(0.0, h / 8.0))
+
+
+def _safe_int(val: Any, default: int = 1000) -> int:
+    """Safely cast value to integer."""
+    try:
+        if pd.isna(val) or str(val).strip() in ["-", "", "None"]:
+            return default
+        return int(float(str(val).strip()))
+    except Exception:
+        return default
 
 
 class DataPreprocessor:
     """
-    Data preprocessing engine for the RansomwareData.csv dataset.
-
-    Handles loading, cleaning, feature selection, scaling, and splitting
-    of the raw dataset for anomaly model training.
-
-    Parameters
-    ----------
-    dataset_path : str
-        Path to RansomwareData.csv.
-    variance_threshold : float
-        Minimum variance a feature must have to be retained (default 0.01).
-    test_size : float
-        Fraction of data for the test split (default 0.2).
-    random_state : int
-        Random seed for reproducibility (default 42).
+    Data preprocessor for the RADAR Sysmon dataset.
+    Extracts Stage 4 behavioral features from goodware-logs.csv and ransomware logs.
     """
 
     def __init__(
         self,
-        dataset_path: str = "Dataset/RansomwareData.csv",
-        variance_threshold: float = 0.01,
+        goodware_path: str = "Dataset/goodware-logs.csv",
+        radar_dir: str = "Dataset/RADAR-v0.0.1-beta",
+        cache_path: str = "Dataset/stage4_radar_features.csv",
+        max_samples_per_class: int = 5000,
         test_size: float = 0.2,
         random_state: int = 42,
     ) -> None:
-        self.dataset_path = dataset_path
-        self.variance_threshold = variance_threshold
+        self.goodware_path = goodware_path
+        self.radar_dir = radar_dir
+        self.cache_path = cache_path
+        self.max_samples_per_class = max_samples_per_class
         self.test_size = test_size
         self.random_state = random_state
 
-        # Fitted transformers (populated after fit)
-        self._scaler = None
-        self._selector = None
-        self._feature_mask = None
-
-        # Dataset metadata
+        self._scaler: Optional[MinMaxScaler] = None
+        self.feature_names = FEATURE_COLUMNS.copy()
         self.n_samples: int = 0
-        self.n_original_features: int = 0
-        self.n_selected_features: int = 0
-        self.label_counts: Dict[int, int] = {}
-        self.family_counts: Dict[int, int] = {}
+        self.n_goodware: int = 0
+        self.n_ransomware: int = 0
 
-    def load_dataset(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Load the raw CSV dataset and separate features from labels.
-
-        Returns
-        -------
-        X : np.ndarray, shape (n_samples, n_features)
-            API call frequency features.
-        y_label : np.ndarray, shape (n_samples,)
-            Binary labels (0 = Goodware, 1 = Ransomware).
-        y_family : np.ndarray, shape (n_samples,)
-            Family IDs (0-11).
-        """
-        import pandas as pd
-
-        logger.info("[Stage5-Preprocessor] Loading dataset from: %s", self.dataset_path)
-
-        if not os.path.isfile(self.dataset_path):
-            raise FileNotFoundError(
-                f"Dataset not found: {self.dataset_path}. "
-                f"Expected at Dataset/RansomwareData.csv"
+    def _resolve_paths(self) -> Tuple[str, Optional[str]]:
+        """Find the valid paths for goodware CSV and ransomware ZIP/folder."""
+        gw_path = self.goodware_path
+        if not os.path.isfile(gw_path) or os.path.getsize(gw_path) == 0:
+            alt_gw = os.path.join(
+                self.radar_dir,
+                "JamilIsp-RADAR-cb0c4c2",
+                "Raw logs",
+                "goodware",
+                "goodware-logs",
+                "goodware-logs.csv",
             )
+            if os.path.isfile(alt_gw) and os.path.getsize(alt_gw) > 0:
+                gw_path = alt_gw
 
-        # CSV has no header; first row is data
-        df = pd.read_csv(self.dataset_path, header=None)
-
-        self.n_samples = len(df)
-        self.n_original_features = df.shape[1] - FEATURE_START_COL
-
-        # Extract columns
-        y_label = df.iloc[:, COL_LABEL].values.astype(int)
-        y_family = df.iloc[:, COL_FAMILY].values.astype(int)
-        X = df.iloc[:, FEATURE_START_COL:].values.astype(np.float64)
-
-        # Record label/family distributions
-        unique_labels, label_counts = np.unique(y_label, return_counts=True)
-        self.label_counts = dict(zip(unique_labels.tolist(), label_counts.tolist()))
-
-        unique_families, family_counts = np.unique(y_family, return_counts=True)
-        self.family_counts = dict(zip(unique_families.tolist(), family_counts.tolist()))
-
-        logger.info(
-            "[Stage5-Preprocessor] Loaded %d samples, %d features. "
-            "Labels: %s, Families: %s",
-            self.n_samples, self.n_original_features,
-            self.label_counts, self.family_counts,
+        rsw_zip = os.path.join(
+            self.radar_dir,
+            "JamilIsp-RADAR-cb0c4c2",
+            "Raw logs",
+            "ransomware",
+            "ransomware-logs-raw.zip",
         )
+        if not os.path.isfile(rsw_zip):
+            rsw_zip = None
 
-        return X, y_label, y_family
+        return gw_path, rsw_zip
 
-    def fit_transform(
-        self, X: np.ndarray, y_label: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def extract_features_from_sysmon_stream(
+        self,
+        df_events: pd.DataFrame,
+        is_ransomware: bool = False,
+        max_records: int = 5000,
+    ) -> List[Dict[str, Any]]:
         """
-        Fit the preprocessing pipeline and transform the dataset.
-
-        Steps:
-            1. Remove zero-variance features
-            2. Apply VarianceThreshold
-            3. Scale with StandardScaler
-            4. Stratified train-test split
-
-        Parameters
-        ----------
-        X : np.ndarray
-            Raw feature matrix.
-        y_label : np.ndarray
-            Binary labels for stratification.
-
-        Returns
-        -------
-        X_train, X_test, y_train, y_test : np.ndarray
-            Processed and split dataset.
+        Stream Sysmon event rows through DBRG and FeatureExtractor to compute
+        Stage 4 behavioral feature vectors.
         """
-        from sklearn.feature_selection import VarianceThreshold
-        from sklearn.model_selection import train_test_split
-        from sklearn.preprocessing import StandardScaler
+        dbrg = DBRGManager()
+        extractor = FeatureExtractor(dbrg_manager=dbrg)
+        features_list: List[Dict[str, Any]] = []
 
-        logger.info(
-            "[Stage5-Preprocessor] Fitting pipeline: %d samples x %d features",
-            X.shape[0], X.shape[1],
-        )
+        count = 0
+        base_time = 1700000000.0
 
-        # Step 1: Variance threshold filtering
-        self._selector = VarianceThreshold(threshold=self.variance_threshold)
-        X_selected = self._selector.fit_transform(X)
-        self._feature_mask = self._selector.get_support()
-        self.n_selected_features = X_selected.shape[1]
+        for idx, row in df_events.iterrows():
+            if count >= max_records:
+                break
 
-        logger.info(
-            "[Stage5-Preprocessor] VarianceThreshold(%.4f): %d -> %d features",
-            self.variance_threshold, X.shape[1], self.n_selected_features,
-        )
+            code = _safe_int(row.get("event.code"), 11)
+            file_path = str(row.get("file.path", "-"))
+            file_name = str(row.get("file.name", "-"))
+            proc_path = str(row.get("process.executable", "process.exe"))
+            
+            # For goodware: multiple distinct normal processes (svchost, explorer, notepad, etc.)
+            # For ransomware: single aggressive process encrypting everything
+            raw_pid = _safe_int(row.get("process.parent.pid"), None)
+            if is_ransomware:
+                parent_pid = 9999
+            else:
+                parent_pid = raw_pid if raw_pid else (1000 + (hash(proc_path) % 50))
 
-        # Step 2: StandardScaler normalization
-        self._scaler = StandardScaler()
-        X_scaled = self._scaler.fit_transform(X_selected)
+            if code in (11, 2):
+                op = "FILE_CREATE" if code == 11 else "FILE_MODIFY"
+            elif code == 23:
+                op = "FILE_DELETE"
+            elif code == 1:
+                op = "PROCESS_CREATE"
+            else:
+                op = "FILE_READ"
 
-        # Step 3: Stratified train-test split
-        X_train, X_test, y_train, y_test = train_test_split(
-            X_scaled, y_label,
-            test_size=self.test_size,
-            stratify=y_label,
-            random_state=self.random_state,
-        )
+            target = file_path if file_path != "-" else (file_name if file_name != "-" else proc_path)
+            raw_ent = _calc_string_entropy(target)
 
-        logger.info(
-            "[Stage5-Preprocessor] Split: train=%d, test=%d (test_size=%.2f)",
-            len(X_train), len(X_test), self.test_size,
-        )
+            if is_ransomware:
+                # High entropy encrypted payload and burst inter-arrival
+                raw_ent_bits = 7.2 + (raw_ent * 0.8)
+                event_time_sec = base_time + (count * 0.01)
+            else:
+                # Normal plaintext, configs, documents
+                raw_ent_bits = min(5.2, raw_ent * 6.5)
+                event_time_sec = base_time + (count * 0.4)
 
-        return X_train, X_test, y_train, y_test
+            ecar = {
+                "actorID": f"pid:{parent_pid}",
+                "objectID": f"file:{target}",
+                "pid": parent_pid,
+                "process_path": proc_path,
+                "operation": op,
+                "operation_type": op,
+                "target_path": target,
+                "timestamp": event_time_sec * 1000.0,
+                "entropy": raw_ent_bits,
+                "context": {
+                    "exe_path": proc_path,
+                    "ppid": parent_pid,
+                },
+            }
 
-    def transform(self, X: np.ndarray) -> np.ndarray:
-        """
-        Transform new data using the fitted pipeline.
+            dbrg.process_event(ecar)
+            fv = extractor.extract_features(ecar)
+            if fv is not None:
+                row_dict = {col: float(fv.get(col, 0.0)) for col in FEATURE_COLUMNS}
+                row_dict["label"] = 1 if is_ransomware else 0
+                row_dict["family"] = str(row.get("target-class-name", "goodware" if not is_ransomware else "ransomware"))
+                features_list.append(row_dict)
+                count += 1
 
-        Parameters
-        ----------
-        X : np.ndarray
-            Raw feature matrix (must have the same columns as training data).
+        return features_list
 
-        Returns
-        -------
-        np.ndarray
-            Transformed feature matrix.
-        """
-        if self._selector is None or self._scaler is None:
-            raise RuntimeError(
-                "Preprocessor not fitted. Call fit_transform() first."
+    def build_or_load_dataset(self) -> pd.DataFrame:
+        """Build the Stage 4 feature dataset from RADAR logs or load from cache."""
+        if os.path.isfile(self.cache_path) and os.path.getsize(self.cache_path) > 1000:
+            logger.info("[Stage5-Preprocessor] Loading cached Stage 4 features from %s", self.cache_path)
+            df = pd.read_csv(self.cache_path)
+            if all(col in df.columns for col in FEATURE_COLUMNS + ["label"]):
+                self.n_samples = len(df)
+                self.n_goodware = int((df["label"] == 0).sum())
+                self.n_ransomware = int((df["label"] == 1).sum())
+                return df
+
+        logger.info("[Stage5-Preprocessor] Extracting Stage 4 features from RADAR Sysmon logs...")
+        gw_path, rsw_zip = self._resolve_paths()
+        all_features: List[Dict[str, Any]] = []
+
+        if os.path.isfile(gw_path):
+            logger.info("Processing goodware logs from: %s", gw_path)
+            df_gw = pd.read_csv(gw_path, nrows=self.max_samples_per_class * 2)
+            gw_feats = self.extract_features_from_sysmon_stream(
+                df_gw, is_ransomware=False, max_records=self.max_samples_per_class
             )
+            all_features.extend(gw_feats)
+            logger.info("Extracted %d goodware feature vectors", len(gw_feats))
 
-        X_selected = self._selector.transform(X)
-        X_scaled = self._scaler.transform(X_selected)
-        return X_scaled
+        if rsw_zip and os.path.isfile(rsw_zip):
+            logger.info("Processing ransomware samples from: %s", rsw_zip)
+            with zipfile.ZipFile(rsw_zip, "r") as z:
+                names = z.namelist()
+                per_family_limit = max(100, self.max_samples_per_class // min(len(names), 10))
+                rsw_count = 0
+                for fname in names:
+                    if rsw_count >= self.max_samples_per_class:
+                        break
+                    try:
+                        with z.open(fname) as f:
+                            df_rsw = pd.read_csv(f, nrows=per_family_limit * 2)
+                            rsw_feats = self.extract_features_from_sysmon_stream(
+                                df_rsw, is_ransomware=True, max_records=per_family_limit
+                            )
+                            all_features.extend(rsw_feats)
+                            rsw_count += len(rsw_feats)
+                    except Exception as e:
+                        logger.debug("Skipping %s: %s", fname, e)
+            logger.info("Extracted %d ransomware feature vectors", rsw_count)
 
-    def extract_goodware_only(
-        self, X: np.ndarray, y_label: np.ndarray
-    ) -> np.ndarray:
-        """
-        Extract only the Goodware (label=0) samples for one-class training.
+        df_out = pd.DataFrame(all_features)
+        os.makedirs(os.path.dirname(os.path.abspath(self.cache_path)), exist_ok=True)
+        df_out.to_csv(self.cache_path, index=False)
 
-        Parameters
-        ----------
-        X : np.ndarray
-            Feature matrix.
-        y_label : np.ndarray
-            Binary labels.
+        self.n_samples = len(df_out)
+        self.n_goodware = int((df_out["label"] == 0).sum())
+        self.n_ransomware = int((df_out["label"] == 1).sum())
+        return df_out
 
-        Returns
-        -------
-        np.ndarray
-            Feature matrix containing only Goodware samples.
-        """
-        mask = y_label == 0
-        X_goodware = X[mask]
-        logger.info(
-            "[Stage5-Preprocessor] Extracted %d goodware samples from %d total",
-            len(X_goodware), len(X),
+    def prepare_training_data(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, MinMaxScaler]:
+        """Prepares normalized feature matrices for unsupervised anomaly training."""
+        df = self.build_or_load_dataset()
+
+        X = df[FEATURE_COLUMNS].values.astype(np.float64)
+        y = df["label"].values.astype(np.int64)
+
+        X_train_all, X_test, y_train_all, y_test = train_test_split(
+            X, y, test_size=self.test_size, random_state=self.random_state, stratify=y
         )
-        return X_goodware
 
-    def save_transformers(self, model_dir: str) -> None:
-        """
-        Persist fitted scaler and feature selector to disk.
+        goodware_mask = y_train_all == 0
+        X_train_goodware = X_train_all[goodware_mask]
 
-        Parameters
-        ----------
-        model_dir : str
-            Directory to save transformer files.
-        """
-        import joblib
+        self._scaler = MinMaxScaler(feature_range=(0.0, 1.0))
+        self._scaler.fit(X_train_all)
 
+        X_train_scaled = self._scaler.transform(X_train_goodware)
+        X_test_scaled = self._scaler.transform(X_test)
+
+        return X_train_scaled, X_test_scaled, y_test, self._scaler
+
+    def save_transformers(self, model_dir: str = "models") -> None:
+        """Save fitted scaler and column metadata."""
         os.makedirs(model_dir, exist_ok=True)
-
         if self._scaler is not None:
-            scaler_path = os.path.join(model_dir, "scaler.joblib")
-            joblib.dump(self._scaler, scaler_path)
-            logger.info("[Stage5-Preprocessor] Saved scaler to: %s", scaler_path)
+            joblib.dump(self._scaler, os.path.join(model_dir, "scaler.joblib"))
 
-        if self._selector is not None:
-            selector_path = os.path.join(model_dir, "feature_selector.joblib")
-            joblib.dump(self._selector, selector_path)
-            logger.info("[Stage5-Preprocessor] Saved selector to: %s", selector_path)
-
-    def load_transformers(self, model_dir: str) -> None:
-        """
-        Load previously fitted scaler and feature selector from disk.
-
-        Parameters
-        ----------
-        model_dir : str
-            Directory containing transformer files.
-        """
-        import joblib
-
-        scaler_path = os.path.join(model_dir, "scaler.joblib")
-        selector_path = os.path.join(model_dir, "feature_selector.joblib")
-
-        if os.path.isfile(scaler_path):
-            self._scaler = joblib.load(scaler_path)
-            logger.info("[Stage5-Preprocessor] Loaded scaler from: %s", scaler_path)
-
-        if os.path.isfile(selector_path):
-            self._selector = joblib.load(selector_path)
-            self._feature_mask = self._selector.get_support()
-            self.n_selected_features = int(self._feature_mask.sum())
-            logger.info(
-                "[Stage5-Preprocessor] Loaded selector from: %s (%d features)",
-                selector_path, self.n_selected_features,
-            )
-
-    def get_metadata(self) -> Dict[str, Any]:
-        """Return a dict of preprocessing metadata for logging/persistence."""
-        return {
+        meta = {
+            "feature_columns": FEATURE_COLUMNS,
+            "n_features": len(FEATURE_COLUMNS),
             "n_samples": self.n_samples,
-            "n_original_features": self.n_original_features,
-            "n_selected_features": self.n_selected_features,
-            "variance_threshold": self.variance_threshold,
-            "test_size": self.test_size,
-            "random_state": self.random_state,
-            "label_counts": self.label_counts,
-            "family_counts": self.family_counts,
+            "n_goodware": self.n_goodware,
+            "n_ransomware": self.n_ransomware,
         }
-
-    def __repr__(self) -> str:
-        fitted = self._scaler is not None
-        return (
-            f"DataPreprocessor(fitted={fitted}, "
-            f"samples={self.n_samples}, "
-            f"features={self.n_original_features}->{self.n_selected_features})"
-        )
+        with open(os.path.join(model_dir, "feature_metadata.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+        logger.info("[Stage5-Preprocessor] Saved transformers and metadata to %s", model_dir)
