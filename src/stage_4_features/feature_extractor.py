@@ -132,8 +132,8 @@ class FeatureExtractor:
                 hist_variance, hist_kurtosis = byte_histogram_stats(data)
                 self.total_files_sampled += 1
             else:
-                # File not readable (deleted, permission, etc.)
-                entropy_raw = 0.0
+                # File not readable (offline dataset replay, deleted, permission, etc.)
+                entropy_raw = float(ecar_event.get("entropy", 0.0))
                 hist_variance = 0.0
                 hist_kurtosis = 0.0
 
@@ -257,7 +257,7 @@ class FeatureExtractor:
             traj["unique_targets"].add(file_path.lower())
             traj["total_events"] += 1
 
-            elapsed = max(0.1, t_now - traj["first_seen"])
+            elapsed = max(1.0, t_now - traj["first_seen"])
             unique_count = len(traj["unique_targets"])
 
             rate = unique_count / elapsed
@@ -270,21 +270,16 @@ class FeatureExtractor:
         Measures the ratio of repeated interactions vs unique targets.
         High S_stab (near 1.0) = stable benign behavior (same files repeatedly).
         Low S_stab (near 0.0) = unstable (many new files = suspicious).
-
-        S_stab = 1.0 - (unique_targets / total_events)
         """
         with self._lock:
             traj = self._trajectory.get(pid)
-            if not traj or traj["total_events"] == 0:
-                return 0.5  # Neutral for first observation
+            if not traj or traj["total_events"] <= 1:
+                return 0.8  # Normal initial stability
 
             unique = len(traj["unique_targets"])
             total = traj["total_events"]
 
-            # Ratio of unique targets to total events
             uniqueness_ratio = unique / total
-
-            # Invert: high uniqueness = low stability
             return max(0.0, min(1.0, 1.0 - uniqueness_ratio))
 
     def reset_pid(self, pid: int) -> None:

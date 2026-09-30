@@ -56,15 +56,32 @@ def read_file_head(file_path: str, size: int = BUFFER_SIZE) -> Optional[bytes]:
     if clean_path.startswith("file:"):
         clean_path = clean_path[5:]
 
-    try:
-        if not os.path.isfile(clean_path):
-            return None
-        with open(clean_path, "rb") as fh:
-            data = fh.read(size)
-        return data if len(data) > 0 else None
-    except (PermissionError, OSError, IOError) as exc:
-        logger.debug("[EntropyCalc] Cannot read %s: %s", clean_path, exc)
-        return None
+    # On Windows, watchdog fires events before file content is fully
+    # flushed to disk by the writing process.  We retry up to 3 times
+    # with escalating delays to give the OS time to commit the write.
+    import time
+    max_retries = 3
+    delays = [0.05, 0.10, 0.20]
+
+    for attempt in range(max_retries):
+        try:
+            if not os.path.isfile(clean_path):
+                return None
+            with open(clean_path, "rb") as fh:
+                data = fh.read(size)
+            if data and len(data) > 0:
+                return data
+            # File exists but empty — writer hasn't flushed yet
+            if attempt < max_retries - 1:
+                time.sleep(delays[attempt])
+        except (PermissionError, OSError, IOError) as exc:
+            # File locked by the writing process — wait and retry
+            if attempt < max_retries - 1:
+                time.sleep(delays[attempt])
+            else:
+                logger.debug("[EntropyCalc] Cannot read %s: %s", clean_path, exc)
+
+    return None
 
 
 def shannon_entropy(data: bytes) -> float:
