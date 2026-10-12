@@ -95,3 +95,22 @@ stage_5:
   model_dir: "models"          # Directory for trained model artifacts
   dataset_path: "Dataset/RansomwareData.csv"  # Training dataset path
 
+# -----------------------------------------------------------
+# Stage 6: Multi-Signal Corroboration & Sigmoidal Acceleration
+# -----------------------------------------------------------
+stage_6:
+  sigmoid:
+    beta: 15.0                     # Steepness of the logistic curve
+    theta: 0.50                    # Center threshold for sigmoid
+  composite_weights:
+    S_entropy: 0.35                # Content entropy priority (highest)
+    S_dist: 0.30                   # Graph fan-out distance priority
+    S_dev: 0.20                    # Trajectory velocity priority
+    S_rel: 0.10                    # Lineage rarity priority
+    S_stab: 0.05                   # Operational stability priority (inverted)
+  threat_tiers:
+    benign: 0.10                   # Below = BENIGN tier
+    elevated: 0.40                 # Below = ELEVATED tier
+    high: 0.75                     # Below = HIGH tier
+                                   # Above = CRITICAL tier
+
