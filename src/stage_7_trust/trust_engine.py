@@ -27,7 +27,7 @@ Stage 10 confirms a false positive) via reset_trust().
 import logging
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -145,10 +145,10 @@ class TrustDecayEngine:
         with self._lock:
             self._trust.pop(pid, None)
 
-    def prune_stale_pids(
+    def evict_stale_pids(
         self, max_age_seconds: float, current_time: Optional[float] = None
-    ) -> int:
-        """Evict trust state for PIDs inactive beyond max_age_seconds."""
+    ) -> List[int]:
+        """Evict trust state for PIDs inactive beyond max_age_seconds, returning the list of evicted PIDs."""
         if current_time is None:
             current_time = time.time()
         cutoff = current_time - max_age_seconds
@@ -156,7 +156,13 @@ class TrustDecayEngine:
             stale = [pid for pid, (_, ts) in self._trust.items() if ts < cutoff]
             for pid in stale:
                 del self._trust[pid]
-            return len(stale)
+            return stale
+
+    def prune_stale_pids(
+        self, max_age_seconds: float, current_time: Optional[float] = None
+    ) -> int:
+        """Evict trust state for PIDs inactive beyond max_age_seconds."""
+        return len(self.evict_stale_pids(max_age_seconds, current_time))
 
     def get_tracked_pids(self):
         with self._lock:

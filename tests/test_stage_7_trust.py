@@ -102,6 +102,17 @@ class TestTrustDecayEngine:
         with pytest.raises(ValueError):
             TrustDecayEngine(gamma=1.5)
 
+    def test_prune_stale_pids(self):
+        engine = TrustDecayEngine()
+        engine.update_trust(pid=1001, intent_drift=0.5, timestamp=100.0)
+        engine.update_trust(pid=1002, intent_drift=0.5, timestamp=150.0)
+        evicted = engine.prune_stale_pids(max_age_seconds=30.0, current_time=160.0)
+        assert evicted == 1
+        assert 1001 not in engine._trust
+        assert 1002 in engine._trust
+        assert engine.get_trust(1001) == 100.0
+        assert engine.get_trust(1002) < 100.0
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # 2. RiskStateMachine
@@ -163,6 +174,17 @@ class TestRiskStateMachine:
     def test_containment_only_in_critical_risk(self):
         assert RiskStateMachine.should_contain("VERIFY") is False
         assert RiskStateMachine.should_contain("CRITICAL_RISK") is True
+
+    def test_forget_pids_multiple(self):
+        rsm = RiskStateMachine()
+        rsm.transition(pid=1, trust=50.0)
+        rsm.transition(pid=2, trust=10.0)
+        rsm.transition(pid=3, trust=80.0)
+        removed = rsm.forget_pids([1, 2, 999])
+        assert removed == 2
+        assert rsm.get_tier(1) is None
+        assert rsm.get_tier(2) is None
+        assert rsm.get_tier(3) == "SAFE"
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -239,6 +261,24 @@ class TestTrustEvolution:
         result2 = te.evolve({"pid": 2, "IntentDrift": 0.0, "drift_rate": 0.0})
         assert result2["trust"] == 100.0
         assert result2["risk_tier"] == "SAFE"
+
+    def test_prune_stale_pids_cleans_both_trust_and_risk_state(self):
+        te = TrustEvolution(gamma=1.0)
+        te.evolve({"pid": 1001, "IntentDrift": 0.8, "drift_rate": 0.0, "timestamp": 1000.0})
+        te.evolve({"pid": 1002, "IntentDrift": 0.8, "drift_rate": 0.0, "timestamp": 1050.0})
+        assert te.risk_machine.get_tier(1001) is not None
+        assert te.risk_machine.get_tier(1002) is not None
+
+        evicted = te.prune_stale_pids(max_age_seconds=30.0, current_time=1060.0)
+        assert evicted == 1
+
+        # PID 1001 was stale: must be purged from BOTH trust engine AND risk machine
+        assert te.trust_engine.get_trust(1001) == 100.0
+        assert te.risk_machine.get_tier(1001) is None
+
+        # PID 1002 was recent: must remain active in both
+        assert te.trust_engine.get_trust(1002) < 100.0
+        assert te.risk_machine.get_tier(1002) is not None
 
 
 # ─────────────────────────────────────────────────────────────────────────

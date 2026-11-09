@@ -114,3 +114,43 @@ stage_6:
     high: 0.75                     # Below = HIGH tier
                                    # Above = CRITICAL tier
 
+# -----------------------------------------------------------
+# Stage 7: Dynamic Adaptive Trust Evolution & Risk State Engine
+# -----------------------------------------------------------
+stage_7:
+  gamma: 0.5                       # Exponential trust decay acceleration multiplier
+  momentum_weight: 0.3             # Penalty weight for accelerating intent drift rate
+  risk_thresholds:
+    safe: 70.0                     # Trust >= 70.0: Normal operations (1x sampling)
+    monitor: 50.0                  # Trust 50.0-69.9: Heightened awareness (2x sampling)
+    verify: 20.0                   # Trust 20.0-49.9: Pre-warm write-ahead journal (4x sampling)
+    critical_risk: 0.0             # Trust < 20.0: Immediate kernel containment trigger
+  stale_pid_max_age_sec: 300.0     # Time after which inactive PID trust state is pruned
+
+# -----------------------------------------------------------
+# Stage 8: Synthetic Ransomware Test Harness
+# -----------------------------------------------------------
+stage_8:
+  default_profile: "lockbit"       # Default simulated ransomware profile
+  sandbox_dir: "sandbox_env"       # Directory for sandboxed victim environment
+  default_num_files: 20            # Baseline victim file count
+  profiles:
+    lockbit:
+      interval_ms: 20              # Fast multi-threaded burst writes
+      batch_size: 5
+      rename_ext: ".locked"
+      drop_ransom_note: true
+      note_filename: "Restore-My-Files.txt"
+    wannacry:
+      interval_ms: 50              # Burst file traversal and rename
+      batch_size: 3
+      rename_ext: ".WNCRY"
+      drop_ransom_note: true
+      note_filename: "@Please_Read_Me@.txt"
+    blackcat:
+      interval_ms: 250             # Low-and-slow stealth traversal
+      batch_size: 1
+      rename_ext: ".encrypted"
+      drop_ransom_note: false
+
+
