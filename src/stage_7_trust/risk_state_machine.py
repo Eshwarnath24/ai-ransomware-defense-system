@@ -18,7 +18,7 @@ Tiers are ordered SAFE > MONITOR > VERIFY > CRITICAL_RISK so that
 """
 
 import threading
-from typing import Dict, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 
 # Tier names in order from least to most severe.
 TIER_ORDER = ("SAFE", "MONITOR", "VERIFY", "CRITICAL_RISK")
@@ -109,6 +109,15 @@ class RiskStateMachine:
     def forget_pid(self, pid: int) -> None:
         with self._lock:
             self._tier.pop(pid, None)
+
+    def forget_pids(self, pids: Iterable[int]) -> int:
+        """Drop tracked tier state for multiple PIDs. Returns count of PIDs removed."""
+        with self._lock:
+            removed = 0
+            for pid in pids:
+                if self._tier.pop(pid, None) is not None:
+                    removed += 1
+            return removed
 
     @staticmethod
     def sampling_multiplier(tier: str) -> int:

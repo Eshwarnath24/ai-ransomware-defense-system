@@ -151,8 +151,10 @@ class TrustEvolution:
     def prune_stale_pids(
         self, max_age_seconds: float, current_time: Optional[float] = None
     ) -> int:
-        """Evict state for processes inactive beyond max_age_seconds."""
-        return self.trust_engine.prune_stale_pids(max_age_seconds, current_time)
+        """Evict state for processes inactive beyond max_age_seconds across all Stage 7 engines."""
+        stale_pids = self.trust_engine.evict_stale_pids(max_age_seconds, current_time)
+        self.risk_machine.forget_pids(stale_pids)
+        return len(stale_pids)
 
     def get_stats(self) -> Dict[str, Any]:
         return {
