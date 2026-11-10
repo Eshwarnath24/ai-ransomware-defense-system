@@ -147,6 +147,7 @@ def run_with_pipeline(
     from src.stage_5_anomaly import AnomalyScorer
     from src.stage_6_fusion import ThreatFusion
     from src.stage_7_trust import TrustEvolution
+    from src.stage_9_containment import ContainmentEngine
 
     sandbox = SandboxManager(sandbox_dir)
     bench = BenchmarkLogger(profile.name)
@@ -154,7 +155,7 @@ def run_with_pipeline(
     print("=" * 65)
     print(f"  STAGE 8 — LIVE PIPELINE INTEGRATION TEST")
     print(f"  Profile : {profile.name}")
-    print(f"  Pipeline: Stages {'2 → ' if rarity else ''}3 → 4 → 5 → 6 → 7")
+    print(f"  Pipeline: Stages {'2 → ' if rarity else ''}3 → 4 → 5 → 6 → 7 → 9")
     print(f"  Sandbox : {sandbox.sandbox_dir}")
     print("=" * 65)
 
@@ -165,7 +166,8 @@ def run_with_pipeline(
     anomaly_scorer = AnomalyScorer()
     threat_fusion = ThreatFusion()
     trust_evolution = TrustEvolution()
-    stage_str = "Stages 2-7" if rarity else "Stages 3-7"
+    containment_engine = ContainmentEngine(dry_run=True)
+    stage_str = "Stages 2-9" if rarity else "Stages 3-9"
     print(f"  {stage_str} initialized")
 
     # Setup sandbox
@@ -253,7 +255,19 @@ def run_with_pipeline(
             )
             print(f"\n  🚨 *** CONTAINMENT TRIGGERED at file {index+1}! ***")
             print(f"  🚨 *** Trust={trust_result['trust']:.1f}, "
-                  f"Risk Tier={trust_result['risk_tier']} -> Dispatching Stage 9 NtSuspendProcess ***\n")
+                  f"Risk Tier={trust_result['risk_tier']} -> Dispatching Stage 9 NtSuspendProcess ***")
+
+            # Execute Stage 9 Freeze-Graph Min-Cut Containment
+            contain_record = containment_engine.contain(
+                pid=attack_pid,
+                dbrg_graph=dbrg.get_graph_snapshot(),
+                trust_state=trust_result,
+            )
+            print(f"  🛡️  [Stage 9] Min-Cut Severed : {len(contain_record.cut_edges)} edges (cost={contain_record.cut_value:.2f})")
+            print(f"  🛡️  [Stage 9] Isolated Files   : {len(contain_record.isolated_files)} files protected")
+            print(f"  🛡️  [Stage 9] Kernel Freeze    : NtSuspendProcess simulated in {contain_record.latency_ms:.3f} ms")
+            print(f"  🛡️  [Stage 9] Process Status   : {containment_engine.freezer.get_state(attack_pid).value}\n")
+
             # Signal the engine to stop the attack
             engine.signal_abort("Pipeline containment triggered")
 

@@ -1,7 +1,7 @@
 # 🛡️ Real-Time Non-Destructive Ransomware Defense System (BIRF)
 
 ![Python Version](https://img.shields.io/badge/Python-3.11%2B-blue?style=for-the-badge&logo=python)
-![Tests Passing](https://img.shields.io/badge/Tests-423%2F423%20PASSED-brightgreen?style=for-the-badge&logo=pytest)
+![Tests Passing](https://img.shields.io/badge/Tests-484%2F484%20PASSED-brightgreen?style=for-the-badge&logo=pytest)
 ![Stage 1](https://img.shields.io/badge/Stage%201-20%2F20-brightgreen?style=for-the-badge)
 ![Stage 2](https://img.shields.io/badge/Stage%202-16%2F16-brightgreen?style=for-the-badge)
 ![Stage 3](https://img.shields.io/badge/Stage%203-28%2F28-brightgreen?style=for-the-badge)
@@ -10,6 +10,7 @@
 ![Stage 6](https://img.shields.io/badge/Stage%206-170%2F170-brightgreen?style=for-the-badge)
 ![Stage 7](https://img.shields.io/badge/Stage%207-36%2F36-brightgreen?style=for-the-badge)
 ![Stage 8](https://img.shields.io/badge/Stage%208-59%2F59-brightgreen?style=for-the-badge)
+![Stage 9](https://img.shields.io/badge/Stage%209-61%2F61-brightgreen?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 
 > **A Machine Learning & OS-Kernel Level Defense Pipeline for Real-Time Ransomware Interception, Behavioral Intent Modeling, Dynamic Adaptive Trust Evolution, and Zero-Data-Loss Rollback.**
@@ -78,7 +79,7 @@ The **Behavioral Intent Recognition Framework (BIRF)** is a 12-stage enterprise 
                                            │
                                            ▼
  ┌───────────────────────────────────────────────────────────────────────────────────┐
- │                 STAGE 9: FREEZE-GRAPH MIN-CUT CONTAINMENT ENGINE                  │  📅 (NEXT)
+ │                 STAGE 9: FREEZE-GRAPH MIN-CUT CONTAINMENT ENGINE                  │  ✅ (61/61 PASSED)
  │           NtSuspendProcess Kernel Halt, Edmonds-Karp Minimum Cut Optimization     │
  └─────────────────────────────────────────┬─────────────────────────────────────────┘
                                            │
@@ -109,7 +110,7 @@ The **Behavioral Intent Recognition Framework (BIRF)** is a 12-stage enterprise 
 | **Stage 6** | **Threat Fusion** | Sigmoidal Intent Drift & Finite-Difference Acceleration | ✅ **Completed** | 170/170 | Multi-signal corroboration, single-signal suppression |
 | **Stage 7** | **Trust State Engine** | Exponential Decay, Momentum Penalty, 4 Risk Tiers | ✅ **Completed** | 36/36 | SAFE $\to$ MONITOR $\to$ VERIFY $\to$ CRITICAL_RISK |
 | **Stage 8** | **Synthetic Harness** | Sandboxed Red-Team Attack Simulator & Benchmark | ✅ **Completed** | 59/59 | LockBit, WannaCry, BlackCat profiles, latency clock |
-| **Stage 9** | **Kernel Containment** | `NtSuspendProcess` Freeze-Graph Min-Cut Engine | 📅 *Next* | — | Edmonds-Karp min-cut, boundary revocation |
+| **Stage 9** | **Kernel Containment** | `NtSuspendProcess` Freeze-Graph Min-Cut Engine | ✅ **Completed** | 61/61 | Edmonds-Karp min-cut, boundary revocation, <2ms halt |
 | **Stage 10** | **Journaling & Rollback** | Write-Ahead Journaling Vault & Zero-Data-Loss Restoration | 📅 *Upcoming* | — | Pre-warm shadow block capture, rollback engine |
 | **Stage 11** | **SOC Dashboard** | FastAPI WebSocket Backend + React/Vite Cytoscape UI | ⚡ *Built* | — | Real-time threat visualizer & manual override |
 | **Stage 12** | **Evaluation Sweep** | Parameter Ablation & Academic Benchmark Suite | 📅 *Upcoming* | — | Precision-Recall sweeps, latency ablation curves |
