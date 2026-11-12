@@ -31,6 +31,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 # Ensure project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -46,6 +47,21 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+class AttackRequest(BaseModel):
+    profile: str = "lockbit"
+    num_files: int = 13
+    auto_resolve: Optional[str] = None
+
+
+class ResolveRequest(BaseModel):
+    pid: int
+    verdict: str  # "MALICIOUS" or "FALSE_POSITIVE"
+
+
+class BenignRequest(BaseModel):
+    num_files: int = 5
 
 # ── Shared instances & Lifecycle ──────────────────────────────────────────
 
@@ -159,10 +175,76 @@ async def health_check():
     """Backend health check endpoint."""
     return {
         "status": "ok",
-        "stages_active": [1, 2, 3, 4, 5, 6],
+        "stages_active": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
         "ws_clients": ws_manager.client_count,
         "pipeline_running": bridge._running,
     }
+
+
+# ── REST: Launch Simulated Attack (Stage 8) ──────────────────────────────
+
+@app.post("/api/attack")
+async def launch_attack(req: AttackRequest):
+    """Launch a Stage 8 simulated ransomware attack with live Stages 2-10 integration."""
+    valid_profiles = ["lockbit", "wannacry", "blackcat"]
+    if req.profile.lower() not in valid_profiles:
+        return {"error": f"Invalid profile. Choose from: {valid_profiles}"}
+    if req.num_files < 1 or req.num_files > 50:
+        return {"error": "num_files must be between 1 and 50"}
+    if req.auto_resolve and req.auto_resolve.upper() not in ("MALICIOUS", "FALSE_POSITIVE"):
+        return {"error": "auto_resolve must be MALICIOUS or FALSE_POSITIVE"}
+    return bridge.launch_attack(
+        req.profile.lower(),
+        req.num_files,
+        auto_resolve=req.auto_resolve.upper() if req.auto_resolve else None,
+    )
+
+
+# ── REST: Benign Activity Simulator (Stage 1 Live OS Telemetry) ──────────
+
+@app.post("/api/benign")
+async def simulate_benign(req: BenignRequest):
+    """Trigger benign file activity in WATCH_DIR for live Stage 1-7 telemetry."""
+    if req.num_files < 1 or req.num_files > 20:
+        return {"error": "num_files must be between 1 and 20"}
+    return bridge.simulate_benign(req.num_files)
+
+
+# ── REST: Resolve Contained Threat (Stage 10) ────────────────────────────
+
+@app.post("/api/resolve")
+async def resolve_threat(req: ResolveRequest):
+    """Resolve a contained threat via Stage 10 Enforcer (MALICIOUS or FALSE_POSITIVE)."""
+    valid_verdicts = ["MALICIOUS", "FALSE_POSITIVE"]
+    if req.verdict.upper() not in valid_verdicts:
+        return {"error": f"Invalid verdict. Choose from: {valid_verdicts}"}
+    try:
+        return bridge.resolve_threat(req.pid, req.verdict.upper())
+    except Exception as e:
+        logger.warning("[API] Resolve failed for PID=%s: %s", req.pid, e)
+        return {"error": str(e)}
+
+
+# ── REST: Containment & Enforcer Status (Stages 9-10) ────────────────────
+
+@app.get("/api/containment")
+async def get_containment():
+    """Returns current containment state, pending resolutions, and resolution history."""
+    return bridge.get_containment_status()
+
+
+@app.get("/api/enforcer")
+async def get_enforcer():
+    """Returns Stage 10 Enforcer statistics (vault, ACLs, resolutions)."""
+    return bridge.enforcer.get_stats()
+
+
+# ── REST: Attack Session Status (Stage 8) ────────────────────────────────
+
+@app.get("/api/attack/{attack_id}")
+async def get_attack_status(attack_id: str):
+    """Get the status of a launched attack."""
+    return bridge.get_attack_status(attack_id)
 
 
 # ── Serve React Frontend (production build) ──────────────────────────────

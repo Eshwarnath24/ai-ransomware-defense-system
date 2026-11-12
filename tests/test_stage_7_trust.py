@@ -200,6 +200,18 @@ class TestTrustEvolution:
         assert result["risk_tier"] == "SAFE"
         assert result["should_contain"] is False
 
+    def test_long_benign_workload_with_elevated_blip_stays_safe(self):
+        """50 benign events (<0.10) with occasional mild 0.11 blips must never erode trust into containment."""
+        te = TrustEvolution(gamma=0.5)
+        result = None
+        for i in range(50):
+            drift = 0.11 if i in (4, 18, 32) else 0.06
+            rate = 0.3 if i in (4, 18, 32) else 0.0
+            result = te.evolve({"pid": 30528, "IntentDrift": drift, "drift_rate": rate})
+        assert result["trust"] >= 90.0
+        assert result["risk_tier"] == "SAFE"
+        assert result["should_contain"] is False
+
     def test_sustained_high_drift_eventually_triggers_containment(self):
         te = TrustEvolution(gamma=0.8)
         result = None

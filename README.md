@@ -92,8 +92,8 @@ The **Behavioral Intent Recognition Framework (BIRF)** is a 12-stage enterprise 
                                            │
                                            ▼
  ┌───────────────────────────────────────────────────────────────────────────────────┐
- │                   STAGE 11: SOC DASHBOARD & INTERACTIVE OVERRIDE                  │  ⚡ (UI BUILT)
- │               FastAPI WebSocket Backend & React/Vite Cytoscape UI                 │
+ │                   STAGE 11: SOC DASHBOARD & INTERACTIVE OVERRIDE                  │  ✅ (INTEGRATED S1-S10)
+ │               FastAPI WebSocket Backend & React/Vite Real-Time UI                 │
  └───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -113,7 +113,7 @@ The **Behavioral Intent Recognition Framework (BIRF)** is a 12-stage enterprise 
 | **Stage 8** | **Synthetic Harness** | Sandboxed Red-Team Attack Simulator & Benchmark | ✅ **Completed** | 59/59 | LockBit, WannaCry, BlackCat profiles, latency clock |
 | **Stage 9** | **Kernel Containment** | `NtSuspendProcess` Freeze-Graph Min-Cut Engine | ✅ **Completed** | 61/61 | Edmonds-Karp min-cut, boundary revocation, <2ms halt |
 | **Stage 10** | **Journaling & Rollback** | Write-Ahead Journaling Vault & Zero-Data-Loss Restoration | ✅ **Completed** | 113/113 | Memory-mapped vault, C_min ACL revocation, zero-loss rollback |
-| **Stage 11** | **SOC Dashboard** | FastAPI WebSocket Backend + React/Vite Cytoscape UI | ⚡ *Built* | — | Real-time threat visualizer & manual override |
+| **Stage 11** | **SOC Dashboard** | FastAPI WebSocket Backend + React/Vite Live SOC UI | ✅ **Completed** | — | Real-time Stages 1–10 telemetry, live attack/mitigation demo & override |
 | **Stage 12** | **Evaluation Sweep** | Parameter Ablation & Academic Benchmark Suite | 📅 *Upcoming* | — | Precision-Recall sweeps, latency ablation curves |
 
 ---
@@ -236,11 +236,11 @@ ai-ransomware-defense-system/
 │       └── demo.py                    # Standalone zero-data-loss demonstration CLI
 ├── dashboard/                         # 📊 Stage 11: Real-Time SOC Dashboard
 │   ├── backend/                       # FastAPI WebSocket Server
-│   │   ├── main.py                    # API endpoints & WebSocket broadcaster
-│   │   └── pipeline_bridge.py         # Bridge connecting Stages 1-7 to UI stream
-│   └── frontend/                      # React / Vite / Tailwind / Cytoscape UI
-│       ├── src/App.jsx                # Main dashboard component
-│       ├── src/components/            # Telemetry feed, graph visualizer, trust gauge
+│   │   ├── main.py                    # API endpoints (/api/attack, /api/resolve, /api/containment, /ws/live)
+│   │   └── pipeline_bridge.py         # Live bridge connecting Stages 1-10 to UI stream
+│   └── frontend/                      # React / Vite Real-Time SOC UI
+│       ├── src/App.jsx                # Main dashboard layout (Stages 1-11)
+│       ├── src/components/            # TrustGauge, ContainmentPanel, AttackLauncher, ResolutionPanel, etc.
 │       └── package.json
 ├── models/                            # 💾 Trained Model Artifacts
 │   ├── isolation_forest.joblib        # Trained Isolation Forest model
@@ -325,19 +325,25 @@ python simulate_ransomware.py --profile lockbit --num-files 15
 
 ---
 
-### 4. Live SOC Dashboard (Stage 11)
+### 4. Live SOC Dashboard (Stage 11 — Full Stages 1–10 Integration)
 
 ```bash
+# Option 1: Single-server production mode (serves API + built React UI on port 8000)
+python -m uvicorn dashboard.backend.main:app --host 0.0.0.0 --port 8000
+# Open http://localhost:8000
+
+# Option 2: Two-terminal development mode
 # Terminal 1: Launch FastAPI WebSocket backend
-cd dashboard/backend
-uvicorn main:app --reload --port 8000
+python -m uvicorn dashboard.backend.main:app --reload --port 8000
 
 # Terminal 2: Launch React / Vite frontend
 cd dashboard/frontend
 npm install
 npm run dev
-# Open http://localhost:5173 to view real-time behavioral graph & trust stream
+# Open http://localhost:5173
 ```
+
+From the dashboard you can run **Interactive SOC Attack** (pauses at Stage 9 Freeze for manual `Confirm Malicious` or `False Positive` verdict), **Full Auto-Mitigate Demo** (runs Stages 1–10 end-to-end with SHA-256 Zero-Data-Loss verification), or **Benign Activity** (live Stage 1 OS file monitoring).
 
 ---
 
