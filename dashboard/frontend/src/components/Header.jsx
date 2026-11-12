@@ -2,8 +2,13 @@
  * Header.jsx — Top navigation bar
  * Shows system title, connection status, and current threat level
  */
-export default function Header({ connected, latestEvent, totalEvents }) {
-  const threatTier = latestEvent?.stage_6?.threat_tier || 'BENIGN';
+export default function Header({ connected, latestEvent, latestResolution, totalEvents }) {
+  const pid = latestEvent?.stage_1?.pid;
+  const isResetFP =
+    latestResolution?.verdict === 'FALSE_POSITIVE' &&
+    latestResolution?.pid != null &&
+    latestResolution.pid === pid;
+  const threatTier = isResetFP ? 'BENIGN' : (latestEvent?.stage_6?.threat_tier || 'BENIGN');
   const eventCount = totalEvents ?? (latestEvent?.event_id || 0);
 
   return (

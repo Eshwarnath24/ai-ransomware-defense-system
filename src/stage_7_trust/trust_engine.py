@@ -32,6 +32,8 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 DEFAULT_GAMMA: float = 0.5
+DEFAULT_BENIGN_DEADBAND: float = 0.10   # Matches Stage 6 BENIGN threshold
+DEFAULT_BENIGN_RECOVERY: float = 1.5    # Gradual trust recovery on BENIGN events
 INITIAL_TRUST: float = 100.0
 MIN_TRUST: float = 0.0
 MAX_TRUST: float = 100.0
@@ -46,12 +48,25 @@ class TrustDecayEngine:
     gamma : float
         Decay multiplier in [0.1, 1.0]. Higher values decay trust faster
         for the same IntentDrift/drift_rate. Default 0.5.
+    benign_deadband : float
+        IntentDrift values strictly below this threshold (default 0.10,
+        matching Stage 6's BENIGN tier) do not erode trust and gently
+        recover minor transient dips back toward 100.0.
+    benign_recovery : float
+        Trust points restored per BENIGN event (default 1.5), capped at 100.0.
     """
 
-    def __init__(self, gamma: float = DEFAULT_GAMMA) -> None:
+    def __init__(
+        self,
+        gamma: float = DEFAULT_GAMMA,
+        benign_deadband: float = DEFAULT_BENIGN_DEADBAND,
+        benign_recovery: float = DEFAULT_BENIGN_RECOVERY,
+    ) -> None:
         if not (0.0 < gamma <= 1.0):
             raise ValueError(f"gamma must be in (0, 1.0], got {gamma}")
         self.gamma = gamma
+        self.benign_deadband = max(0.0, float(benign_deadband))
+        self.benign_recovery = max(0.0, float(benign_recovery))
 
         # pid -> (trust, last_timestamp)
         self._trust: Dict[int, Tuple[float, float]] = {}
@@ -104,8 +119,17 @@ class TrustDecayEngine:
         with self._lock:
             previous_trust, _ = self._trust.get(pid, (INITIAL_TRUST, timestamp))
 
-            delta_trust = self.gamma * intent_drift * momentum * 100.0
-            new_trust = max(MIN_TRUST, min(MAX_TRUST, previous_trust - delta_trust))
+            if intent_drift < self.benign_deadband:
+                if intent_drift == 0.0 or self.benign_recovery == 0.0:
+                    delta_trust = 0.0
+                    new_trust = previous_trust
+                else:
+                    recovered = min(MAX_TRUST, previous_trust + self.benign_recovery)
+                    delta_trust = previous_trust - recovered
+                    new_trust = recovered
+            else:
+                delta_trust = self.gamma * intent_drift * momentum * 100.0
+                new_trust = max(MIN_TRUST, min(MAX_TRUST, previous_trust - delta_trust))
 
             self._trust[pid] = (new_trust, timestamp)
             self.total_updates += 1

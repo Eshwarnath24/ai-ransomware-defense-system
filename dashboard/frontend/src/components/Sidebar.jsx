@@ -1,6 +1,6 @@
 /**
- * Sidebar.jsx — Pipeline stage indicators and statistics
- * Shows which stages are active and pipeline-wide stats
+ * Sidebar.jsx — Pipeline stage indicators and live cross-stage statistics
+ * Shows all active stages (1-11) and Stage 12 offline evaluation sweep.
  */
 import { useState, useEffect } from 'react';
 
@@ -11,12 +11,12 @@ const STAGES = [
   { id: 4, name: 'Feature Extraction', active: true },
   { id: 5, name: 'Anomaly Scoring', active: true },
   { id: 6, name: 'Threat Fusion', active: true },
-  { id: 7, name: 'Trust State Engine', active: false },
-  { id: 8, name: 'Synthetic Harness', active: false },
-  { id: 9, name: 'Kernel Containment', active: false },
-  { id: 10, name: 'Journaling & Rollback', active: false },
+  { id: 7, name: 'Trust State Engine', active: true },
+  { id: 8, name: 'Synthetic Harness', active: true },
+  { id: 9, name: 'Kernel Containment', active: true },
+  { id: 10, name: 'Journaling & Rollback', active: true },
   { id: 11, name: 'SOC Dashboard', active: true },
-  { id: 12, name: 'Evaluation Sweep', active: false },
+  { id: 12, name: 'Eval Sweep (CLI)', active: false },
 ];
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -32,12 +32,15 @@ export default function Sidebar({ latestEvent }) {
       } catch (e) { /* ignore */ }
     };
     fetchStats();
-    const interval = setInterval(fetchStats, 3000);
+    const interval = setInterval(fetchStats, 2500);
     return () => clearInterval(interval);
   }, []);
 
   const s6 = stats?.stage_6 || {};
   const s5 = stats?.stage_5 || {};
+  const s7 = latestEvent?.stage_7 || {};
+  const s9 = stats?.stage_9 || {};
+  const s10 = stats?.stage_10 || {};
 
   return (
     <aside className="sidebar">
@@ -97,8 +100,20 @@ export default function Sidebar({ latestEvent }) {
           <span className="stat-value text-critical">{s6.total_critical ?? 0}</span>
         </div>
         <div className="stat-row">
-          <span className="stat-label">PIDs Tracked</span>
-          <span className="stat-value">{s6.pids_tracked ?? 0}</span>
+          <span className="stat-label">🔐 Trust Score</span>
+          <span className="stat-value">{s7.trust != null ? s7.trust.toFixed(1) : '—'}</span>
+        </div>
+        <div className="stat-row">
+          <span className="stat-label">🛡️ Contained</span>
+          <span className="stat-value">{s9.total_contained ?? 0}</span>
+        </div>
+        <div className="stat-row">
+          <span className="stat-label">💾 Vault Backups</span>
+          <span className="stat-value">{s10.vault_snapshots ?? 0}</span>
+        </div>
+        <div className="stat-row">
+          <span className="stat-label">⚖️ Resolutions</span>
+          <span className="stat-value">{s10.total_resolutions ?? 0}</span>
         </div>
       </div>
     </aside>

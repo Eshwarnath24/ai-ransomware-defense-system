@@ -2,13 +2,17 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 
 /**
  * Custom hook for WebSocket connection to the pipeline backend.
- * Auto-reconnects on disconnect, maintains event buffer.
- * On mount, fetches recent events from REST so data survives page refresh.
+ * Routes pipeline telemetry events, attack lifecycle events,
+ * Stage 9 containment events, and Stage 10 resolution events cleanly.
  */
 export function useWebSocket(url, apiBase) {
   const [events, setEvents] = useState([]);
   const [latestEvent, setLatestEvent] = useState(null);
+  const [latestAttackEvent, setLatestAttackEvent] = useState(null);
+  const [latestContainment, setLatestContainment] = useState(null);
+  const [latestResolution, setLatestResolution] = useState(null);
   const [connected, setConnected] = useState(false);
+
   const wsRef = useRef(null);
   const reconnectRef = useRef(null);
   const eventCountRef = useRef(0);
@@ -23,7 +27,7 @@ export function useWebSocket(url, apiBase) {
     };
   }, []);
 
-  // ── Fetch buffered events from REST API on mount ──
+  // ── Fetch buffered events & containment state from REST API on mount ──
   useEffect(() => {
     if (!apiBase) return;
     const controller = new AbortController();
@@ -33,23 +37,40 @@ export function useWebSocket(url, apiBase) {
         const res = await fetch(`${apiBase}/api/events?limit=50`, {
           signal: controller.signal,
         });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!Array.isArray(data) || data.length === 0) return;
-
-        const enriched = data.map(evt => enrichEvent(evt));
-
-        // Track seen event_ids to avoid duplicates when WS reconnects
-        enriched.forEach(evt => {
-          if (evt.event_id != null) seenIdsRef.current.add(evt.event_id);
-        });
-
-        setEvents(enriched);
-        setLatestEvent(enriched[0]);
-        console.log(`[REST] Loaded ${enriched.length} buffered events`);
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data) && data.length > 0) {
+            const enriched = data.map(evt => enrichEvent(evt));
+            enriched.forEach(evt => {
+              if (evt.event_id != null) seenIdsRef.current.add(evt.event_id);
+            });
+            setEvents(enriched);
+            setLatestEvent(enriched[0]);
+          }
+        }
       } catch (e) {
         if (e.name !== 'AbortError') {
           console.warn('[REST] Failed to fetch recent events:', e);
+        }
+      }
+
+      try {
+        const res = await fetch(`${apiBase}/api/containment`, {
+          signal: controller.signal,
+        });
+        if (res.ok) {
+          const cData = await res.json();
+          const pendingVals = Object.values(cData.pending_resolutions || {});
+          if (pendingVals.length > 0) {
+            setLatestContainment(pendingVals[0]);
+          }
+          if (Array.isArray(cData.recent_resolutions) && cData.recent_resolutions.length > 0) {
+            setLatestResolution(cData.recent_resolutions[0]);
+          }
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          console.warn('[REST] Failed to fetch containment state:', e);
         }
       }
     })();
@@ -71,7 +92,22 @@ export function useWebSocket(url, apiBase) {
         try {
           const data = JSON.parse(event.data);
 
-          // Skip if we already loaded this event from REST
+          if (data.type === 'attack_event') {
+            setLatestAttackEvent(data);
+            return;
+          }
+
+          if (data.type === 'containment_event') {
+            setLatestContainment(data.data || data);
+            return;
+          }
+
+          if (data.type === 'resolution_event') {
+            setLatestResolution(data.resolution || data.data || data);
+            return;
+          }
+
+          // Standard pipeline_event (Stages 1-10 per-event telemetry)
           if (data.event_id != null && seenIdsRef.current.has(data.event_id)) {
             return;
           }
@@ -127,5 +163,13 @@ export function useWebSocket(url, apiBase) {
     return () => clearInterval(interval);
   }, []);
 
-  return { events, latestEvent, connected, eventCount: eventCountRef.current };
+  return {
+    events,
+    latestEvent,
+    connected,
+    eventCount: eventCountRef.current,
+    latestAttackEvent,
+    latestContainment,
+    latestResolution,
+  };
 }

@@ -19,9 +19,15 @@ function getTierName(drift) {
   return 'CRITICAL';
 }
 
-export default function ThreatGauge({ latestEvent }) {
-  const drift = latestEvent?.stage_6?.IntentDrift ?? 0;
-  const driftRate = latestEvent?.stage_6?.drift_rate ?? 0;
+export default function ThreatGauge({ latestEvent, latestResolution }) {
+  const pid = latestEvent?.stage_1?.pid;
+  const isResetFP =
+    latestResolution?.verdict === 'FALSE_POSITIVE' &&
+    latestResolution?.pid != null &&
+    latestResolution.pid === pid;
+  const rawDrift = latestEvent?.stage_6?.IntentDrift ?? 0;
+  const drift = isResetFP ? 0 : Math.min(1, Math.max(0, rawDrift));
+  const driftRate = isResetFP ? 0 : (latestEvent?.stage_6?.drift_rate ?? 0);
   const color = getTierColor(drift);
   const tier = getTierName(drift);
 
@@ -47,7 +53,8 @@ export default function ThreatGauge({ latestEvent }) {
     const y1 = cy - r * Math.sin(startAngle);
     const x2 = cx + r * Math.cos(angle);
     const y2 = cy - r * Math.sin(angle);
-    const largeArc = drift > 0.5 ? 1 : 0;
+    // Gauge spans a 180-degree semicircle, so central angle <= Math.PI (largeArc always 0)
+    const largeArc = 0;
     return `M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}`;
   }, [drift, angle]);
 
