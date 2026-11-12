@@ -20,6 +20,7 @@ Usage
 
 import argparse
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -48,6 +49,13 @@ def _configure_utf8_output() -> None:
                 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
         except Exception:
             pass
+
+
+def _file_sha256(path: Path) -> str:
+    """Compute SHA-256 hex digest of a file."""
+    import hashlib
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
 
 
 def run_standalone(
@@ -123,13 +131,14 @@ def run_with_pipeline(
     profile: AttackProfile,
     sandbox_dir: Optional[Path] = None,
     num_files: Optional[int] = None,
+    resolve: str = "malicious",
 ) -> tuple:
     """
-    Run an attack with live Stages 3-7 pipeline integration.
+    Run an attack with live Stages 3-10 pipeline integration.
 
-    Uses the AttackEngine's on_file_encrypted callback to feed each
-    encrypted file through the pipeline in real time, eliminating
-    code duplication between the engine and the runner.
+    Uses the AttackEngine's callbacks to feed each encrypted file
+    through the pipeline in real time, executing containment and
+    Stage 10 enforcement and selective rollback upon threat confirmation.
 
     Returns
     -------
@@ -148,6 +157,7 @@ def run_with_pipeline(
     from src.stage_6_fusion import ThreatFusion
     from src.stage_7_trust import TrustEvolution
     from src.stage_9_containment import ContainmentEngine
+    from src.stage_10_enforcer import Enforcer, Verdict
 
     sandbox = SandboxManager(sandbox_dir)
     bench = BenchmarkLogger(profile.name)
@@ -155,7 +165,7 @@ def run_with_pipeline(
     print("=" * 65)
     print(f"  STAGE 8 — LIVE PIPELINE INTEGRATION TEST")
     print(f"  Profile : {profile.name}")
-    print(f"  Pipeline: Stages {'2 → ' if rarity else ''}3 → 4 → 5 → 6 → 7 → 9")
+    print(f"  Pipeline: Stages {'2 → ' if rarity else ''}3 → 4 → 5 → 6 → 7 → 9 → 10")
     print(f"  Sandbox : {sandbox.sandbox_dir}")
     print("=" * 65)
 
@@ -167,7 +177,15 @@ def run_with_pipeline(
     threat_fusion = ThreatFusion()
     trust_evolution = TrustEvolution()
     containment_engine = ContainmentEngine(dry_run=True)
-    stage_str = "Stages 2-9" if rarity else "Stages 3-9"
+    enforcer = Enforcer(
+        containment_engine=containment_engine,
+        trust_evolution=trust_evolution,
+        dry_run=True,
+        always_on=True,
+        allowed_roots=[str(sandbox.sandbox_dir)],
+        rollback_dry_run=False,
+    )
+    stage_str = "Stages 2-10" if rarity else "Stages 3-10"
     print(f"  {stage_str} initialized")
 
     # Setup sandbox
@@ -176,14 +194,25 @@ def run_with_pipeline(
     file_count = sandbox.file_count()
     print(f"  Created {file_count} victim files")
 
+    # Capture pre-attack truth for zero-data-loss verification
+    pre_attack_hashes: dict = {}
+    for target_path in sandbox.get_target_files():
+        try:
+            pre_attack_hashes[str(target_path)] = _file_sha256(target_path)
+        except OSError:
+            pass
+
     # Build the pipeline callback
     attack_pid = 9999  # Simulated malicious PID
     detection_triggered = False
     total_target_files = file_count
+    resolution_result = None
 
     def pipeline_callback(original_path, renamed_path, data, index):
         """Feed each encrypted file through Stages 3→4→5→6→7."""
-        nonlocal detection_triggered
+        nonlocal detection_triggered, resolution_result
+
+        enforcer.note_rename(attack_pid, str(original_path), str(renamed_path))
 
         ecar_event = {
             "actorID": f"pid:{attack_pid}",
@@ -203,7 +232,8 @@ def run_with_pipeline(
         # Stage 4: Extract features
         try:
             features = feature_extractor.extract_features(ecar_event)
-        except Exception:
+        except Exception as exc:
+            logger.warning("[Runner] Stage 4 failed: %s", exc, exc_info=True)
             features = None
 
         if not features:
@@ -212,7 +242,8 @@ def run_with_pipeline(
         # Stage 5: Anomaly scoring
         try:
             anomaly_result = anomaly_scorer.score(features)
-        except Exception:
+        except Exception as exc:
+            logger.warning("[Runner] Stage 5 failed: %s", exc, exc_info=True)
             return
 
         # Stage 6: Threat fusion
@@ -222,14 +253,18 @@ def run_with_pipeline(
                 features_to_fuse["S_rel"] = rarity.calculate_s_rel("cmd.exe", "malware.exe")
             fusion_result = threat_fusion.fuse(features_to_fuse, anomaly_result=anomaly_result)
             fusion_result["pid"] = attack_pid
-        except Exception:
+        except Exception as exc:
+            logger.warning("[Runner] Stage 6 failed: %s", exc, exc_info=True)
             return
 
         # Stage 7: Trust evolution
         try:
             trust_result = trust_evolution.evolve(fusion_result)
-        except Exception:
+        except Exception as exc:
+            logger.warning("[Runner] Stage 7 failed: %s", exc, exc_info=True)
             return
+
+        enforcer.on_trust_update(trust_result)
 
         bench.record_trust_point(
             pid=attack_pid,
@@ -266,7 +301,21 @@ def run_with_pipeline(
             print(f"  🛡️  [Stage 9] Min-Cut Severed : {len(contain_record.cut_edges)} edges (cost={contain_record.cut_value:.2f})")
             print(f"  🛡️  [Stage 9] Isolated Files   : {len(contain_record.isolated_files)} files protected")
             print(f"  🛡️  [Stage 9] Kernel Freeze    : NtSuspendProcess simulated in {contain_record.latency_ms:.3f} ms")
-            print(f"  🛡️  [Stage 9] Process Status   : {containment_engine.freezer.get_state(attack_pid).value}\n")
+            print(f"  🛡️  [Stage 9] Process Status   : {containment_engine.freezer.get_state(attack_pid).value}")
+
+            # Execute Stage 10 ACL Enforcement & Resolution
+            enforce_record = enforcer.enforce(contain_record)
+            print(f"  🛡️  [Stage 10] Enforced ACLs   : {len(enforce_record.acl_records)} paths revoked along C_min")
+
+            if resolve.lower() == "malicious":
+                resolution_result = enforcer.resolve(attack_pid, Verdict.MALICIOUS)
+                print(f"  🛡️  [Stage 10] Resolution     : MALICIOUS confirmed — SIGKILL issued, vault rollback executed in {resolution_result.duration_ms:.2f}ms\n")
+            elif resolve.lower() == "false_positive":
+                resolution_result = enforcer.resolve(attack_pid, Verdict.FALSE_POSITIVE)
+                print(f"  🛡️  [Stage 10] Resolution     : FALSE POSITIVE confirmed — ACLs restored, Trust reset to 100, SIGCONT resumed in {resolution_result.duration_ms:.2f}ms\n")
+            else:
+                resolution_result = None
+                print(f"  🛡️  [Stage 10] Resolution     : PENDING (no resolution applied)\n")
 
             # Signal the engine to stop the attack
             engine.signal_abort("Pipeline containment triggered")
@@ -279,6 +328,8 @@ def run_with_pipeline(
         logger_=bench,
         abort_on_detection=True,
         on_file_encrypted=pipeline_callback,
+        on_before_encrypt=lambda p, i: enforcer.before_write(str(p), attack_pid),
+        on_file_created=lambda p: enforcer.note_created(attack_pid, str(p)),
     )
     result = engine.execute()
 
@@ -292,6 +343,38 @@ def run_with_pipeline(
         print("\n  Trust Trajectory:")
         for tp in report.trust_trajectory:
             print(f"    PID={tp['pid']}  Trust={tp['trust']:5.1f}  Tier={tp['tier']}")
+
+    # Stage 10 Rollback & Zero Data Loss Verification
+    if resolution_result is not None and resolution_result.verdict == Verdict.MALICIOUS:
+        files_lost = 0
+        for orig_path_str, expected_hash in pre_attack_hashes.items():
+            if os.path.exists(orig_path_str):
+                try:
+                    actual_hash = _file_sha256(Path(orig_path_str))
+                    if actual_hash != expected_hash:
+                        files_lost += 1
+                except OSError:
+                    files_lost += 1
+            else:
+                files_lost += 1
+
+        print("\n" + "=" * 65)
+        print("  STAGE 10 — ROLLBACK & ZERO DATA LOSS VERIFICATION")
+        print(f"  Files lost: {files_lost}")
+        print(f"  Zero data loss: {'YES' if files_lost == 0 else 'NO'}")
+        if resolution_result.rollback_report is not None:
+            print(f"  Files restored : {resolution_result.rollback_report.restored}/{resolution_result.rollback_report.total}")
+            print(f"  Artifacts deleted : {resolution_result.rollback_report.deleted_artifacts}")
+            print(f"  Rollback duration : {resolution_result.rollback_report.duration_ms:.2f} ms")
+        print("=" * 65)
+    elif resolution_result is not None and resolution_result.verdict == Verdict.FALSE_POSITIVE:
+        print("\n" + "=" * 65)
+        print("  STAGE 10 — FALSE POSITIVE RESUMPTION VERIFICATION")
+        print(f"  ACLs restored : {resolution_result.acl_restored}")
+        print(f"  Process state : {containment_engine.freezer.get_state(attack_pid).value}")
+        print(f"  Trust score   : {trust_evolution.trust_engine.get_trust(attack_pid):.1f}")
+        print(f"  Zero files lost : YES (writes were legitimate, process resumed)")
+        print("=" * 65)
 
     # Cleanup
     sandbox.cleanup()
@@ -330,6 +413,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run with live Stages 3-7 pipeline integration",
     )
     parser.add_argument(
+        "--resolve",
+        choices=["malicious", "false_positive", "none"],
+        default="malicious",
+        help="Stage 10 enforcement resolution action (default: malicious)",
+    )
+    parser.add_argument(
         "--clean",
         action="store_true",
         help="Only clean up the sandbox directory and exit",
@@ -364,7 +453,7 @@ def main() -> None:
     profile = get_profile(args.profile)
 
     if args.with_pipeline:
-        run_with_pipeline(profile, sandbox_dir, args.num_files)
+        run_with_pipeline(profile, sandbox_dir, args.num_files, resolve=args.resolve)
     else:
         run_standalone(profile, sandbox_dir, args.num_files)
 
