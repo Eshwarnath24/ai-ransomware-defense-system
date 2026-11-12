@@ -62,6 +62,16 @@ class AttackEngine:
         ``on_file_encrypted(original_path, renamed_path, data, index)``.
         Allows the runner to feed events into the pipeline without
         duplicating the attack loop.
+    on_before_encrypt : callable, optional
+        Callback invoked immediately before each file is overwritten:
+        ``on_before_encrypt(original_path, file_index)``.
+        Used by Stage 10's write-ahead journal to capture the pre-write
+        file contents before they are destroyed by encryption.
+    on_file_created : callable, optional
+        Callback invoked after a ransom note (or other attack artifact)
+        is written: ``on_file_created(path)``.
+        Used by Stage 10 to track files created by the attacker for
+        cleanup during rollback.
     """
 
     def __init__(
@@ -71,12 +81,16 @@ class AttackEngine:
         logger_: Optional[BenchmarkLogger] = None,
         abort_on_detection: bool = False,
         on_file_encrypted: Optional[Callable] = None,
+        on_before_encrypt: Optional[Callable] = None,
+        on_file_created: Optional[Callable] = None,
     ) -> None:
         self.sandbox = sandbox
         self.profile = profile
         self.bench = logger_ or BenchmarkLogger(profile.name)
         self.abort_on_detection = abort_on_detection
         self.on_file_encrypted = on_file_encrypted
+        self.on_before_encrypt = on_before_encrypt
+        self.on_file_created = on_file_created
         self._aborted = False
         self._abort_reason: Optional[str] = None
 
@@ -138,6 +152,12 @@ class AttackEngine:
                         original_size = safe_path.stat().st_size if safe_path.exists() else 4096
                         write_size = max(original_size, 1024)  # minimum 1KB
                         encrypted_data = os.urandom(write_size)
+                        # Hook: capture pre-write content for Stage 10 journaling
+                        if self.on_before_encrypt is not None:
+                            try:
+                                self.on_before_encrypt(safe_path, len(encrypted_files))
+                            except Exception as e:
+                                logger.debug("on_before_encrypt callback error: %s", e)
                         safe_path.write_bytes(encrypted_data)
                         self.bench.record_attack_event(str(safe_path))
                         affected_dirs.add(safe_path.parent)
@@ -190,6 +210,12 @@ class AttackEngine:
                     safe_note = self.sandbox.verify_path_safety(note_path)
                     safe_note.write_text(self.profile.note_content, encoding="utf-8")
                     notes_dropped += 1
+                    # Hook: notify Stage 10 of attack-created artifacts
+                    if self.on_file_created is not None:
+                        try:
+                            self.on_file_created(safe_note)
+                        except Exception as e:
+                            logger.debug("on_file_created callback error: %s", e)
                 except SandboxEscapeError as e:
                     logger.error("Safety violation during ransom note: %s", e)
                     break

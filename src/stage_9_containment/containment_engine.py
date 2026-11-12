@@ -169,19 +169,19 @@ class ContainmentEngine:
                 self._containment_log.append(record)
             return record
 
-        # ── 2. Compute min-cut ───────────────────────────────────────
-        cut_result: MinCutResult = self.graph_cutter.compute_min_cut(
-            graph=dbrg_graph,
-            source_pid=source_node,
-        )
-
-        # ── 3. Freeze the process ────────────────────────────────────
+        # ── 2. Freeze the process (immediately, per architecture spec) ─
         reason = (
             f"CRITICAL_RISK trust={trust_score:.1f}"
             if trust_score is not None
             else "containment_triggered"
         )
         freeze_result = self.freezer.freeze(pid=pid, reason=reason)
+
+        # ── 3. Compute min-cut on the frozen DBRG snapshot ───────────
+        cut_result: MinCutResult = self.graph_cutter.compute_min_cut(
+            graph=dbrg_graph,
+            source_pid=source_node,
+        )
 
         # ── 4. Build and store the record ────────────────────────────
         latency = (time.perf_counter() - t_start) * 1000.0

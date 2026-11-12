@@ -1,7 +1,7 @@
 # 🛡️ Real-Time Non-Destructive Ransomware Defense System (BIRF)
 
 ![Python Version](https://img.shields.io/badge/Python-3.11%2B-blue?style=for-the-badge&logo=python)
-![Tests Passing](https://img.shields.io/badge/Tests-484%2F484%20PASSED-brightgreen?style=for-the-badge&logo=pytest)
+![Tests Passing](https://img.shields.io/badge/Tests-597%2F597%20PASSED-brightgreen?style=for-the-badge&logo=pytest)
 ![Stage 1](https://img.shields.io/badge/Stage%201-20%2F20-brightgreen?style=for-the-badge)
 ![Stage 2](https://img.shields.io/badge/Stage%202-16%2F16-brightgreen?style=for-the-badge)
 ![Stage 3](https://img.shields.io/badge/Stage%203-28%2F28-brightgreen?style=for-the-badge)
@@ -11,6 +11,7 @@
 ![Stage 7](https://img.shields.io/badge/Stage%207-36%2F36-brightgreen?style=for-the-badge)
 ![Stage 8](https://img.shields.io/badge/Stage%208-59%2F59-brightgreen?style=for-the-badge)
 ![Stage 9](https://img.shields.io/badge/Stage%209-61%2F61-brightgreen?style=for-the-badge)
+![Stage 10](https://img.shields.io/badge/Stage%2010-113%2F113-brightgreen?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 
 > **A Machine Learning & OS-Kernel Level Defense Pipeline for Real-Time Ransomware Interception, Behavioral Intent Modeling, Dynamic Adaptive Trust Evolution, and Zero-Data-Loss Rollback.**
@@ -85,7 +86,7 @@ The **Behavioral Intent Recognition Framework (BIRF)** is a 12-stage enterprise 
                                            │
                                            ▼
  ┌───────────────────────────────────────────────────────────────────────────────────┐
- │            STAGE 10: FINE-GRAINED ENFORCER, JOURNALING & ROLLBACK                 │  📅 (UPCOMING)
+ │            STAGE 10: FINE-GRAINED ENFORCER, JOURNALING & ROLLBACK                 │  ✅ (113/113 PASSED)
  │               Write-Ahead Journaling Vault & Zero-Data-Loss Restoration           │
  └─────────────────────────────────────────┬─────────────────────────────────────────┘
                                            │
@@ -111,7 +112,7 @@ The **Behavioral Intent Recognition Framework (BIRF)** is a 12-stage enterprise 
 | **Stage 7** | **Trust State Engine** | Exponential Decay, Momentum Penalty, 4 Risk Tiers | ✅ **Completed** | 36/36 | SAFE $\to$ MONITOR $\to$ VERIFY $\to$ CRITICAL_RISK |
 | **Stage 8** | **Synthetic Harness** | Sandboxed Red-Team Attack Simulator & Benchmark | ✅ **Completed** | 59/59 | LockBit, WannaCry, BlackCat profiles, latency clock |
 | **Stage 9** | **Kernel Containment** | `NtSuspendProcess` Freeze-Graph Min-Cut Engine | ✅ **Completed** | 61/61 | Edmonds-Karp min-cut, boundary revocation, <2ms halt |
-| **Stage 10** | **Journaling & Rollback** | Write-Ahead Journaling Vault & Zero-Data-Loss Restoration | 📅 *Upcoming* | — | Pre-warm shadow block capture, rollback engine |
+| **Stage 10** | **Journaling & Rollback** | Write-Ahead Journaling Vault & Zero-Data-Loss Restoration | ✅ **Completed** | 113/113 | Memory-mapped vault, C_min ACL revocation, zero-loss rollback |
 | **Stage 11** | **SOC Dashboard** | FastAPI WebSocket Backend + React/Vite Cytoscape UI | ⚡ *Built* | — | Real-time threat visualizer & manual override |
 | **Stage 12** | **Evaluation Sweep** | Parameter Ablation & Academic Benchmark Suite | 📅 *Upcoming* | — | Precision-Recall sweeps, latency ablation curves |
 
@@ -138,7 +139,7 @@ $$\text{Trust}(t) = \text{Trust}_{\text{prev}} \cdot e^{-\gamma \cdot \text{Inte
 
 ```text
 Trust Score:
-100.0 ────────── 70.0 ────────── 50.0 ────────── 20.0 ────────── 0.0
+100.0 ────────── 60.0 ────────── 35.0 ────────── 20.0 ────────── 0.0
    [  🟢 SAFE  ]     [ 🟡 MONITOR ]    [ 🟠 VERIFY ]    [ 🚨 CRITICAL ]
    1x Sampling       2x Sampling       4x Sampling      Kernel Freeze
                                        Pre-warm Journal (Stage 9 + 10)
@@ -147,6 +148,20 @@ Trust Score:
 ### 6. Stage 8 — Microsecond Benchmark Metrics
 $$\text{Detection Latency: } \Delta t_{\text{detect}} = \max(0, t_{\text{contain}} - t_0) \quad (\text{ms})$$
 $$\text{Damage Footprint: } N_{\text{damage}} = \sum_{e \in \text{Events}} \mathbb{I}(t_e < t_{\text{contain}})$$
+
+### 7. Stage 10 — Fine-Grained Enforcer, Write-Ahead Journaling & Selective Rollback
+
+The enforcer operationalizes the Stage 9 min-cut boundary $C_{\min}$ and executes zero-data-loss restoration:
+- **Write-Ahead Memory-Mapped Vault (`JournalVault`):** Captures 64 KB block slices with incremental SHA-256 pre-images in a dedicated vault (`/tmp/.journal_vault` or platform temp, mode `0o700`). Employs **first-copy-wins** so that subsequent encrypted overwrites never replace the clean pre-image.
+- **Selective $C_{\min}$ Write Revocation (`ACLManager`):** Revokes filesystem write permissions strictly along severed edges in $C_{\min}$. Supports `temporarily_writable` context manager for rollback writes while keeping quarantine active.
+- **Process Termination with Safety Guards (`ProcessTerminator`):** Issues OS-level `SIGKILL` (POSIX) or `psutil.Process.kill()` (Windows) on confirmed threats while guarding protected system PIDs ($PID \le 1$, self, parent) and verifying against PID reuse via `create_time`.
+- **Atomic Rollback & Artifact Elimination (`RollbackEngine`):** Byte-for-byte file restoration using atomic `os.replace`, restoring exact mode bits and timestamps, while deleting encrypted `.locked` copies and attacker ransom notes.
+- **Analyst Resolution Paths:**
+  - `MALICIOUS`: `SIGKILL` $\to$ atomic vault rollback $\to$ retain $C_{\min}$ ACL revocations (quarantine).
+  - `FALSE_POSITIVE`: restore ACLs $\to$ reset trust score to 100 $\to$ resume process via `SIGCONT` (unfreeze).
+
+> [!NOTE]
+> **Stage 10 Telemetry Limitation:** In live production deployments, true pre-write file interception requires kernel drivers (`fanotify` with `FAN_OPEN_PERM` on Linux, eBPF, or a Windows minifilter driver), as userspace telemetry (`watchdog`) triggers post-write. In the test harness, the `always_on` journaling hooks capture pre-write buffers before encryption, providing empirical verification of byte-for-byte zero data loss across LockBit, WannaCry, and BlackCat attack profiles.
 
 ---
 
@@ -199,13 +214,26 @@ ai-ransomware-defense-system/
 │   │   ├── trust_evolution.py         # Stage 7 orchestrator
 │   │   ├── live_stage7_monitor.py     # Live terminal monitor for Stages 1-7
 │   │   └── demo_stage7_trust.py       # Standalone demonstration CLI
-│   └── stage_8_harness/               # 🧪 Stage 8: Synthetic Ransomware Test Harness
+│   ├── stage_8_harness/               # 🧪 Stage 8: Synthetic Ransomware Test Harness
+│   │   ├── __init__.py
+│   │   ├── sandbox_manager.py         # Isolated victim directory & path-safety guards
+│   │   ├── attack_profiles.py         # LockBit, WannaCry, BlackCat speed presets
+│   │   ├── attack_engine.py           # Multi-phase attack engine (encrypt, rename, notes)
+│   │   ├── benchmark_logger.py        # Microsecond latency & damage tracker
+│   │   └── runner.py                  # Standalone CLI & live pipeline orchestrator
+│   ├── stage_9_containment/            # 🛑 Stage 9: Freeze-Graph Min-Cut Containment
+│   │   ├── __init__.py
+│   │   ├── containment_engine.py      # Kernel freeze & min-cut containment orchestrator
+│   │   ├── graph_cut.py               # Edmonds-Karp min-cut on the DBRG
+│   │   ├── process_freezer.py         # Simulated NtSuspendProcess / SIGSTOP manager
+│   │   └── demo.py                    # Standalone Stage 9 demonstration CLI
+│   └── stage_10_enforcer/             # 🔒 Stage 10: Fine-Grained Enforcer & Rollback
 │       ├── __init__.py
-│       ├── sandbox_manager.py         # Isolated victim directory & path-safety guards
-│       ├── attack_profiles.py         # LockBit, WannaCry, BlackCat speed presets
-│       ├── attack_engine.py           # Multi-phase attack engine (encrypt, rename, notes)
-│       ├── benchmark_logger.py        # Microsecond latency & damage tracker
-│       └── runner.py                  # Standalone CLI & live pipeline orchestrator
+│       ├── acl_manager.py             # C_min write ACL revocations & temporary restoration
+│       ├── journal_rollback.py        # Memory-mapped write-ahead vault & rollback engine
+│       ├── process_terminator.py      # Guarded SIGKILL termination for confirmed threats
+│       ├── enforcer.py                # Dual resolution orchestrator (MALICIOUS / FP)
+│       └── demo.py                    # Standalone zero-data-loss demonstration CLI
 ├── dashboard/                         # 📊 Stage 11: Real-Time SOC Dashboard
 │   ├── backend/                       # FastAPI WebSocket Server
 │   │   ├── main.py                    # API endpoints & WebSocket broadcaster
@@ -219,7 +247,7 @@ ai-ransomware-defense-system/
 │   ├── one_class_svm.joblib           # Trained One-Class SVM model
 │   ├── scaler.joblib                  # Fitted MinMaxScaler
 │   └── training_metadata.json         # Training metrics & hyperparameters
-├── tests/                             # 🧪 Automated Test Suite (423 Tests)
+├── tests/                             # 🧪 Automated Test Suite (597 Tests)
 │   ├── __init__.py
 │   ├── test_stage1.py                 # 20 tests: Telemetry collection
 │   ├── test_stage2.py                 # 16 tests: Lineage & rarity
@@ -229,6 +257,8 @@ ai-ransomware-defense-system/
 │   ├── test_stage_6_fusion.py         # 170 tests: Multi-signal threat fusion
 │   ├── test_stage_7_trust.py          # 36 tests: Trust decay & state machine
 │   ├── test_stage_8_harness.py        # 59 tests: Synthetic harness & benchmarks
+│   ├── test_stage_9_containment.py    # 61 tests: Freeze-graph min-cut containment
+│   ├── test_stage_10_enforcer.py      # 113 tests: Journal vault, ACL & rollback
 │   ├── manual_test_stage_3.py         # Interactive graph verification CLI
 │   └── demo_ransomware_scenario.py    # Scenario demonstration
 ├── simulate_ransomware.py             # 💥 Stage 8 Powered Simulation CLI
@@ -250,7 +280,7 @@ cd ai-ransomware-defense-system
 pip install -r requirements.txt
 ```
 
-### 2. Run the Full Test Suite (423 Tests)
+### 2. Run the Full Test Suite (597 Tests)
 
 ```bash
 # Run all 423 automated tests across Stages 1–8
