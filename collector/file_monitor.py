@@ -106,7 +106,9 @@ class _RansomwareFileEventHandler(FileSystemEventHandler):
         Applies sliding window deduplication to prevent Windows event spam.
         """
         now = _now_ms()
-        norm_path = file_path.lower()
+        norm_path = file_path.lower().replace("\\", "/")
+        if "/.vault" in norm_path or "/.restore_" in norm_path:
+            return
         dedup_key = (norm_path, operation)
 
         with self._lock:

@@ -203,7 +203,7 @@ class AttackEngine:
                     time.sleep(self.profile.interval_ms / 1000.0)
 
         # ── Phase 4: Drop ransom notes ───────────────────────────────
-        if self.profile.drop_ransom_note and not self._aborted:
+        if self.profile.drop_ransom_note and affected_dirs:
             for dir_path in affected_dirs:
                 note_path = dir_path / self.profile.note_filename
                 try:

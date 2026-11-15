@@ -73,9 +73,23 @@ class PipelineBridge:
         The WebSocket connection pool to broadcast events to.
     """
 
-    def __init__(self, watch_paths: List[str], ws_manager):
+    def __init__(
+        self,
+        watch_paths: List[str],
+        ws_manager,
+        sandbox_dir: Optional[Path] = None,
+    ):
         self.ws_manager = ws_manager
         self.watch_paths = watch_paths
+        if sandbox_dir is not None:
+            self.sandbox_dir = sandbox_dir.resolve()
+        else:
+            try:
+                self.sandbox_dir = (Path.home() / "Downloads" / "ards_sandbox").resolve()
+                self.sandbox_dir.mkdir(parents=True, exist_ok=True)
+            except (PermissionError, OSError):
+                self.sandbox_dir = (PROJECT_ROOT / "monitored_test_dir").resolve()
+                self.sandbox_dir.mkdir(parents=True, exist_ok=True)
 
         # ── Stage 2: Lineage Rarity Engine ──
         try:
@@ -644,13 +658,11 @@ class PipelineBridge:
                     "sha256_prefix": expected_sha[:12],
                 })
 
-        # Now safe to clean up sandbox directory
-        if sandbox is not None:
-            try:
-                sandbox.cleanup()
-            except Exception as exc:
-                logger.warning("[PipelineBridge] Sandbox cleanup failed: %s", exc)
-            session["sandbox"] = None
+        # Erase the temporary write-ahead journal backup from the temp vault after use
+        try:
+            self.vault.purge(pid)
+        except Exception as exc:
+            logger.warning("[PipelineBridge] Vault purge failed: %s", exc)
 
         session["status"] = f"RESOLVED_{verdict.value}"
         session["resolved_at"] = time.time()
@@ -821,19 +833,39 @@ class PipelineBridge:
             attack_id = f"attack_{attack_num}"
             attack_pid = 9000 + attack_num
 
-        # Clean up any prior unresolved/abandoned sandboxes older than latest 3
-        old_sessions = list(self._attack_sessions.values())[:-3]
-        for old in old_sessions:
-            if old.get("sandbox") is not None and old.get("pid") not in self._pending_resolutions:
-                try:
-                    old["sandbox"].cleanup()
-                except Exception:
-                    pass
-                old["sandbox"] = None
-
-        sandbox_dir = Path(tempfile.gettempdir()) / f"ards_ui_sandbox_{os.getpid()}_{attack_id}"
+        sandbox_dir = self.sandbox_dir
+        sandbox_dir.mkdir(parents=True, exist_ok=True)
         sandbox = SandboxManager(sandbox_dir)
-        sandbox.setup(num_files=num_files)
+
+        # Clean up any leftover attack artifacts (.locked, notes) from previous runs
+        # while strictly preserving user-created documents!
+        for ext in (".locked", ".WNCRY", ".encrypted"):
+            for artifact in sandbox_dir.rglob(f"*{ext}"):
+                try:
+                    artifact.unlink()
+                except OSError:
+                    pass
+        for note_name in ("Restore-My-Files.txt", "@Please_Read_Me@.txt", "README_RESTORE_FILES.txt"):
+            for note in sandbox_dir.rglob(note_name):
+                try:
+                    note.unlink()
+                except OSError:
+                    pass
+
+        # Use existing files in the sandbox (including any manual files created by the user).
+        # Ensure we have at least max(num_files, 10) targets so the attack generates
+        # enough burst activity for the ML pipeline to reliably trigger containment,
+        # while preserving any user-created files at the front of the attack queue!
+        target_count = max(num_files, 10)
+        existing_targets = sandbox.get_target_files()
+        if len(existing_targets) < target_count:
+            sandbox.setup(num_files=target_count)
+            all_targets = sandbox.get_target_files()
+            sandbox._is_setup = True
+            sandbox._created_files = list(all_targets)
+        else:
+            sandbox._is_setup = True
+            sandbox._created_files = list(existing_targets)
         total_files = sandbox.file_count()
 
         # Capture pre-attack SHA-256 ground truth for Zero-Data-Loss verification

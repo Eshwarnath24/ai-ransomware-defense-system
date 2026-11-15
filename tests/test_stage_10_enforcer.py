@@ -1691,7 +1691,7 @@ class TestUpstreamFixes:
         import logging
         # Just verify the logger exists and warning calls are present in the source
         runner_path = Path(__file__).parent.parent / "src" / "stage_8_harness" / "runner.py"
-        content = runner_path.read_text()
+        content = runner_path.read_text(encoding='utf-8')
         assert "logger.warning" in content, "Runner must contain logger.warning calls"
         assert "[Runner] Stage" in content, "Runner warnings must identify the failing stage"
 

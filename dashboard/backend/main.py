@@ -67,11 +67,21 @@ class BenignRequest(BaseModel):
 
 ws_manager = WebSocketManager()
 
-# Default watch directory
-WATCH_DIR = PROJECT_ROOT / "monitored_test_dir"
+# Realistic sandbox in user's Downloads folder (with project root fallback)
+try:
+    _downloads_sandbox = (Path.home() / "Downloads" / "ards_sandbox").resolve()
+    _downloads_sandbox.mkdir(parents=True, exist_ok=True)
+    SANDBOX_DIR = _downloads_sandbox
+except (PermissionError, OSError):
+    SANDBOX_DIR = (PROJECT_ROOT / "monitored_test_dir").resolve()
+    SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
+
+WATCH_DIR = SANDBOX_DIR
+
 bridge = PipelineBridge(
-    watch_paths=[str(WATCH_DIR.resolve())],
+    watch_paths=[str(SANDBOX_DIR), str((PROJECT_ROOT / "monitored_test_dir").resolve())],
     ws_manager=ws_manager,
+    sandbox_dir=SANDBOX_DIR,
 )
 
 
