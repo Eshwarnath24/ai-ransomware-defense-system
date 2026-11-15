@@ -314,16 +314,28 @@ class SandboxManager:
 
         Filters out already-encrypted files (ransomware extensions) and
         ransom notes so that re-running an attack on a dirty sandbox
-        does not produce double-extension artifacts.
+        does not produce double-extension artifacts. Prioritizes root-level
+        and recently modified user files so live demonstrations observe
+        immediate target mutation before containment triggers.
         """
         if not self._sandbox_dir.exists():
             return []
-        return sorted(
+        candidates = [
             p for p in self._sandbox_dir.rglob("*")
             if p.is_file()
             and p.suffix not in _RANSOMWARE_EXTENSIONS
             and p.name not in _RANSOM_NOTE_NAMES
-        )
+        ]
+
+        def _target_priority(p: Path):
+            is_root = 0 if p.parent == self._sandbox_dir else 1
+            try:
+                mtime = -p.stat().st_mtime
+            except OSError:
+                mtime = 0
+            return (is_root, mtime, str(p).lower())
+
+        return sorted(candidates, key=_target_priority)
 
     def get_all_files(self) -> List[Path]:
         """Return ALL files in the sandbox (no filtering)."""
