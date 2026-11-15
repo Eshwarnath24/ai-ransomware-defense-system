@@ -112,14 +112,17 @@ class GraphCutEngine:
         return None
 
     def compute_boundary_nodes(
-        self, graph: nx.DiGraph, source_pid: str
+        self, graph: nx.DiGraph, source_pid: str, multi_hop: bool = True
     ) -> Set[str]:
         """
-        Find all file nodes directly reachable from *source_pid*.
+        Find all file nodes reachable from *source_pid*.
+
+        Supports both direct 1-hop successors and multi-hop descendants
+        reachable via intermediate nodes (e.g., directory handles, child processes,
+        sockets, or relay nodes).
 
         A node is considered a "file" node if its ``node_type`` attribute
-        is ``"file"`` or if its ID starts with ``"file:"``.  Only direct
-        successors (one hop) are returned.
+        is ``"file"`` or if its ID starts with ``"file:"``.
 
         Parameters
         ----------
@@ -127,22 +130,46 @@ class GraphCutEngine:
             The DBRG graph (or a snapshot).
         source_pid : str
             Process node ID, e.g. ``"pid:1234"`` or integer PID.
+        multi_hop : bool, optional
+            If True (default), traverses multi-hop descendant paths.
+            If False, only inspects direct 1-hop successors.
 
         Returns
         -------
         set of str
-            File-node IDs that are direct successors of *source_pid*.
+            File-node IDs that are reachable from *source_pid*.
         """
         source_node = self._resolve_source_node(graph, source_pid)
         if source_node is None:
             return set()
 
         boundary: Set[str] = set()
-        for successor in graph.successors(source_node):
-            node_data = graph.nodes.get(successor, {})
-            node_type = node_data.get("node_type", "")
-            if node_type == "file" or str(successor).startswith("file:"):
-                boundary.add(successor)
+
+        if multi_hop:
+            # Multi-hop discovery: find all descendant nodes reachable from source_node
+            try:
+                reachable_descendants = nx.descendants(graph, source_node)
+            except Exception as exc:
+                logger.error(
+                    "[GraphCut] Error traversing descendants of '%s': %s",
+                    source_node,
+                    exc,
+                )
+                reachable_descendants = set()
+
+            for node in reachable_descendants:
+                node_data = graph.nodes.get(node, {})
+                node_type = node_data.get("node_type", "")
+                if node_type == "file" or str(node).startswith("file:"):
+                    boundary.add(node)
+        else:
+            # 1-hop direct successors only
+            for successor in graph.successors(source_node):
+                node_data = graph.nodes.get(successor, {})
+                node_type = node_data.get("node_type", "")
+                if node_type == "file" or str(successor).startswith("file:"):
+                    boundary.add(successor)
+
         return boundary
 
     def compute_min_cut(
@@ -150,10 +177,15 @@ class GraphCutEngine:
         graph: nx.DiGraph,
         source_pid: str,
         capacity_attr: str = "cut_cost",
+        multi_hop: bool = True,
     ) -> MinCutResult:
         """
         Compute the minimum s-t cut isolating *source_pid* from its
         file targets.
+
+        Supports multi-hop intermediate relationship graphs, allowing the
+        algorithm to choose between cutting shared upstream bottleneck edges
+        or downstream file connections to minimize total containment cost.
 
         Creates a virtual super-sink connected from every boundary file
         node, runs Edmonds-Karp, and returns the ``MinCutResult``.
@@ -166,6 +198,8 @@ class GraphCutEngine:
             Process node ID to isolate (the "source" in the s-t cut).
         capacity_attr : str
             Edge attribute name used as capacity (default ``"cut_cost"``).
+        multi_hop : bool, optional
+            Whether to discover file targets across multi-hop paths (default True).
 
         Returns
         -------
@@ -181,8 +215,8 @@ class GraphCutEngine:
             )
             return MinCutResult()
 
-        # ── 2. Find boundary file nodes ──────────────────────────────
-        boundary = self.compute_boundary_nodes(graph, source_node)
+        # ── 2. Find boundary file nodes (multi-hop supported) ────────
+        boundary = self.compute_boundary_nodes(graph, source_node, multi_hop=multi_hop)
         if not boundary:
             logger.info(
                 "[GraphCut] Source '%s' has no file-node successors; "
@@ -203,10 +237,17 @@ class GraphCutEngine:
                 data[capacity_attr] = self.default_capacity
 
         # Add super-sink and connect all boundary files to it
+        # Dynamic sink capacity: guaranteed larger than any possible real cut
+        total_finite_capacity = sum(
+            data.get(capacity_attr, self.default_capacity)
+            for _, _, data in aug.edges(data=True)
+        )
+        dynamic_sink_cap = total_finite_capacity + 1.0
+
         aug.add_node(_SUPER_SINK, node_type="sink")
         for file_node in boundary:
             aug.add_edge(
-                file_node, _SUPER_SINK, **{capacity_attr: SINK_CAPACITY}
+                file_node, _SUPER_SINK, **{capacity_attr: dynamic_sink_cap}
             )
 
         # ── 4. Run Edmonds-Karp min-cut ──────────────────────────────

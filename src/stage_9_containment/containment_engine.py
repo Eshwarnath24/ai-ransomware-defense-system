@@ -8,8 +8,9 @@ from Stage 7's ``TrustEvolution.evolve()`` result and executes the
 full containment sequence:
 
     1. Snapshot the DBRG (or accept one as argument).
-    2. Compute the Edmonds-Karp minimum cut via ``GraphCutEngine``.
-    3. Freeze (suspend) the malicious process via ``ProcessFreezer``.
+    2. Freeze (suspend) the malicious process immediately via ``ProcessFreezer``.
+    3. Compute the Edmonds-Karp minimum cut via ``GraphCutEngine`` on the
+       now-stable graph.
     4. Record the containment event in an append-only log.
 
 Data Flow:
@@ -121,8 +122,8 @@ class ContainmentEngine:
         Steps
         -----
         1. Resolve the process node ID in the DBRG (``"pid:<PID>"``).
-        2. Compute the minimum s-t cut to isolate it from file targets.
-        3. Freeze (suspend) the process.
+        2. Freeze (suspend) the process immediately to stop damage.
+        3. Compute the minimum s-t cut on the now-stable DBRG snapshot.
         4. Record the event and return the ``ContainmentRecord``.
 
         Parameters
